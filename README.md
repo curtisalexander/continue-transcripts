@@ -143,6 +143,10 @@ Continue stores data in `~/.continue/` on Linux and macOS (`%USERPROFILE%\.conti
 4. Produces a self-contained HTML file per session (all CSS and JavaScript are embedded — no external dependencies)
 5. Generates an `index.html` listing all sessions when processing multiple files
 
+## Inspiration
+
+Inspired by Simon Willison's [claude-code-transcripts](https://github.com/simonw/claude-code-transcripts).
+
 ## License
 
 MIT
