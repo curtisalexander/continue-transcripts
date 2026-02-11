@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "continue-transcripts"
+version = "0.1.0"
+description = "Convert continue.dev session files to readable HTML transcripts"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "Cargo.toml"
+python-source = "python"
+strip = true
