@@ -1,6 +1,6 @@
 [package]
 name = "continue-transcripts"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Convert continue.dev session files to readable HTML transcripts"
 license = "MIT"
@@ -18,3 +18,4 @@ html-escape = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 glob = "0.3"
 syntect = "5"
+rayon = "1"

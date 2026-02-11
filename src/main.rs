@@ -1,6 +1,7 @@
 use clap::Parser;
 use html_escape::encode_text;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser as MdParser, Tag, TagEnd};
+use rayon::prelude::*;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1006,64 +1007,64 @@ fn main() {
 
     fs::create_dir_all(output_dir).expect("Failed to create output directory");
 
-    let mut processed = 0u32;
+    // Process files in parallel: read, parse, filter, and render HTML concurrently
+    let results: Vec<_> = files
+        .par_iter()
+        .filter_map(|file| {
+            let raw = match fs::read_to_string(file) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Warning: could not read {}: {}", file.display(), e);
+                    return None;
+                }
+            };
+
+            let session: Session = match serde_json::from_str(&raw) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Warning: could not parse {}: {}", file.display(), e);
+                    return None;
+                }
+            };
+
+            // Apply title filter if provided
+            if let Some(ref filter) = cli.filter {
+                if !session
+                    .title
+                    .to_lowercase()
+                    .contains(&filter.to_lowercase())
+                {
+                    return None;
+                }
+            }
+
+            if session.history.is_empty() {
+                return None;
+            }
+
+            let html = render_session(&session, Some(file.as_path()));
+
+            let title = if session.title.is_empty() {
+                session.session_id.clone()
+            } else {
+                session.title.clone()
+            };
+            let filename = format!("{}.html", sanitize_filename(&title));
+            let date = session.date_created.clone().unwrap_or_default();
+
+            Some((html, title, filename, date))
+        })
+        .collect();
+
+    // Write output files and build the index
     let mut index_entries: Vec<(String, String, String)> = Vec::new(); // (title, filename, date)
-
-    for file in &files {
-        let raw = match fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Warning: could not read {}: {}", file.display(), e);
-                continue;
-            }
-        };
-
-        let session: Session = match serde_json::from_str(&raw) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Warning: could not parse {}: {}", file.display(), e);
-                continue;
-            }
-        };
-
-        // Apply title filter if provided
-        if let Some(ref filter) = cli.filter {
-            if !session
-                .title
-                .to_lowercase()
-                .contains(&filter.to_lowercase())
-            {
-                continue;
-            }
-        }
-
-        if session.history.is_empty() {
-            continue;
-        }
-
-        let html = render_session(&session, Some(file.as_path()));
-
-        let title = if session.title.is_empty() {
-            &session.session_id
-        } else {
-            &session.title
-        };
-        let filename = format!(
-            "{}.html",
-            sanitize_filename(title)
-        );
-        let out_path = output_dir.join(&filename);
-
-        fs::write(&out_path, &html).expect("Failed to write HTML file");
+    for (html, title, filename, date) in &results {
+        let out_path = output_dir.join(filename);
+        fs::write(&out_path, html).expect("Failed to write HTML file");
         eprintln!("  Wrote: {}", out_path.display());
-
-        let date = session
-            .date_created
-            .clone()
-            .unwrap_or_default();
-        index_entries.push((title.to_string(), filename, date));
-        processed += 1;
+        index_entries.push((title.clone(), filename.clone(), date.clone()));
     }
+    let processed = results.len();
 
     // Generate index.html
     if !index_entries.is_empty() {
