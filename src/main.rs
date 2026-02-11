@@ -55,6 +55,24 @@ struct ChatHistoryItem {
     message: ChatMessage,
     #[serde(default)]
     context_items: Vec<ContextItem>,
+    #[serde(default)]
+    prompt_logs: Option<Vec<PromptLog>>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct PromptLog {
+    #[serde(default)]
+    model_title: String,
+    #[serde(default)]
+    completion_options: Option<CompletionOptions>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CompletionOptions {
+    #[serde(default)]
+    model: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -442,6 +460,27 @@ fn file_modified_date(path: &Path) -> Option<String> {
     Some(dt.format("%Y-%m-%d %H:%M").to_string())
 }
 
+/// Extract the model name from the session history.
+/// Looks through prompt logs for the first non-empty model title,
+/// falling back to the completion_options.model field.
+fn extract_model(session: &Session) -> Option<String> {
+    for item in &session.history {
+        if let Some(logs) = &item.prompt_logs {
+            for log in logs {
+                if !log.model_title.is_empty() {
+                    return Some(log.model_title.clone());
+                }
+                if let Some(opts) = &log.completion_options {
+                    if !opts.model.is_empty() {
+                        return Some(opts.model.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let title = if session.title.is_empty() {
         "Untitled Session"
@@ -475,6 +514,15 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         &session.workspace_directory
     };
 
+    let model = extract_model(session);
+    let model_meta = match &model {
+        Some(m) => format!(
+            "\n      <span class=\"meta-item\">Model: <code>{}</code></span>",
+            encode_text(m)
+        ),
+        None => String::new(),
+    };
+
     format!(
         r##"<!DOCTYPE html>
 <html lang="en">
@@ -490,7 +538,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     <h1>{title}</h1>
     <div class="session-meta">
       <span class="meta-item">Session: <code>{session_id}</code></span>
-      <span class="meta-item">Date: {date}</span>
+      <span class="meta-item">Date: {date}</span>{model_meta}
       <span class="meta-item">Workspace: <code>{workspace}</code></span>
       <span class="meta-item">{user_count} user messages &middot; {assistant_count} assistant messages</span>
     </div>
@@ -510,6 +558,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         JS = JS,
         session_id = encode_text(&session.session_id),
         date = encode_text(&date_str),
+        model_meta = model_meta,
         workspace = encode_text(workspace),
         user_count = user_count,
         assistant_count = assistant_count,
@@ -1199,6 +1248,7 @@ mod tests {
                     tool_calls: None,
                 },
                 context_items: vec![],
+                prompt_logs: None,
             }],
             date_created: Some("2025-01-01".to_string()),
         };
