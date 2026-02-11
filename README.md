@@ -16,22 +16,26 @@ Convert [continue.dev](https://continue.dev) session files to readable, self-con
 
 ## Installation
 
-The package is built with [Maturin](https://www.maturin.rs/) and compiles a Rust binary that gets bundled into a Python wheel. You need a Rust toolchain to build from source.
+Pre-built wheels are available from [GitHub Releases](https://github.com/curtisalexander/continue-transcripts/releases). No Rust toolchain is required — just Python >= 3.9 and `uv`.
 
 ### With `uv tool install` (recommended)
 
 Install globally so the `continue-transcripts` command is always available:
 
 ```sh
-uv tool install git+https://github.com/curtisalexander/continue-transcripts
+uv tool install continue-transcripts \
+  --no-index \
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.1.0
 ```
 
-This compiles and installs the binary into uv's tool environment. The `continue-transcripts` command is then available on your `PATH`.
+The `continue-transcripts` command is then available on your `PATH`.
 
-To upgrade later:
+To upgrade later (update the version in the URL):
 
 ```sh
-uv tool upgrade continue-transcripts
+uv tool install --upgrade continue-transcripts \
+  --no-index \
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.1.0
 ```
 
 To uninstall:
@@ -45,7 +49,11 @@ uv tool uninstall continue-transcripts
 Run without installing:
 
 ```sh
-uvx --from git+https://github.com/curtisalexander/continue-transcripts continue-transcripts ./sessions
+uvx \
+  --no-index \
+  --from continue-transcripts \
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.1.0 \
+  continue-transcripts ./sessions
 ```
 
 This is useful for a quick one-off conversion without permanently installing the tool.
@@ -57,15 +65,29 @@ Install into a specific virtual environment:
 ```sh
 uv venv .venv
 source .venv/bin/activate
-uv pip install git+https://github.com/curtisalexander/continue-transcripts
+uv pip install continue-transcripts \
+  --no-index \
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.1.0
 ```
 
-### Build requirements
+### Building from source
 
-All installation methods compile the Rust binary during install. You need:
+If you prefer to build from source (or need a platform not covered by the pre-built wheels), you can install directly from the Git repository. This requires a [Rust toolchain](https://rustup.rs/) in addition to Python >= 3.9:
 
-- Python >= 3.9
-- A [Rust toolchain](https://rustup.rs/) (`rustup` is the easiest way to install one)
+```sh
+uv tool install git+https://github.com/curtisalexander/continue-transcripts
+```
+
+### Pre-built wheel platforms
+
+Wheels are built in CI for the following targets:
+
+| Platform | Target |
+|----------|--------|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux aarch64 | `aarch64-unknown-linux-gnu` |
+| macOS Apple Silicon | `aarch64-apple-darwin` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` |
 
 ## Usage
 
