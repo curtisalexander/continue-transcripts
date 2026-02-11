@@ -1,9 +1,12 @@
 use clap::Parser;
 use html_escape::encode_text;
-use pulldown_cmark::{Options, Parser as MdParser};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser as MdParser, Tag, TagEnd};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use syntect::highlighting::ThemeSet;
+use syntect::html::highlighted_html_for_string;
+use syntect::parsing::SyntaxSet;
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -52,6 +55,24 @@ struct ChatHistoryItem {
     message: ChatMessage,
     #[serde(default)]
     context_items: Vec<ContextItem>,
+    #[serde(default)]
+    prompt_logs: Option<Vec<PromptLog>>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct PromptLog {
+    #[serde(default)]
+    model_title: String,
+    #[serde(default)]
+    completion_options: Option<CompletionOptions>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CompletionOptions {
+    #[serde(default)]
+    model: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -153,7 +174,59 @@ struct ContextItem {
 }
 
 // ---------------------------------------------------------------------------
-// Markdown → HTML  (using pulldown-cmark)
+// Syntax highlighting helpers  (syntect)
+// ---------------------------------------------------------------------------
+
+fn get_syntax_set() -> &'static SyntaxSet {
+    use std::sync::OnceLock;
+    static SS: OnceLock<SyntaxSet> = OnceLock::new();
+    SS.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn get_theme() -> &'static syntect::highlighting::Theme {
+    use std::sync::OnceLock;
+    static TH: OnceLock<syntect::highlighting::Theme> = OnceLock::new();
+    TH.get_or_init(|| {
+        let ts = ThemeSet::load_defaults();
+        ts.themes["base16-ocean.dark"].clone()
+    })
+}
+
+/// Map common language aliases to tokens that syntect's default set recognises.
+fn normalize_lang(lang: &str) -> &str {
+    match lang {
+        "typescript" | "ts" | "tsx" => "javascript",
+        "jsx" => "javascript",
+        "sh" | "zsh" | "shell" => "bash",
+        "yml" => "yaml",
+        "dockerfile" => "Dockerfile",
+        "md" => "markdown",
+        "py" => "python",
+        "rb" => "ruby",
+        "rs" => "rust",
+        "cs" => "c#",
+        "cxx" | "cc" | "hpp" => "c++",
+        other => other,
+    }
+}
+
+/// Attempt to syntax-highlight `code` for the given language token.
+/// Returns highlighted HTML (with inline styles) or `None` if the
+/// language is not recognised.
+fn highlight_code(lang: &str, code: &str) -> Option<String> {
+    let ss = get_syntax_set();
+    let lang = normalize_lang(lang);
+    // Try multiple lookup strategies: token, extension, then name substring
+    let syntax = ss
+        .find_syntax_by_token(lang)
+        .or_else(|| ss.find_syntax_by_extension(lang))
+        .or_else(|| ss.find_syntax_by_name(lang))?;
+    let theme = get_theme();
+    highlighted_html_for_string(code, ss, syntax, theme).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Markdown → HTML  (using pulldown-cmark + syntect)
 // ---------------------------------------------------------------------------
 
 fn markdown_to_html(md: &str) -> String {
@@ -163,7 +236,79 @@ fn markdown_to_html(md: &str) -> String {
     let parser = MdParser::new_ext(md, options);
 
     let mut html_output = String::new();
-    pulldown_cmark::html::push_html(&mut html_output, parser);
+    let mut in_code_block = false;
+    let mut code_lang = String::new();
+    let mut code_buf = String::new();
+
+    // We collect events and replace code blocks with highlighted HTML
+    let events: Vec<Event<'_>> = parser.collect();
+    let mut i = 0;
+
+    while i < events.len() {
+        match &events[i] {
+            Event::Start(Tag::CodeBlock(kind)) => {
+                in_code_block = true;
+                code_buf.clear();
+                code_lang = match kind {
+                    CodeBlockKind::Fenced(lang) => lang.to_string(),
+                    CodeBlockKind::Indented => String::new(),
+                };
+                i += 1;
+                continue;
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+                // Try syntax highlighting; fall back to plain escaped code
+                if !code_lang.is_empty() {
+                    if let Some(highlighted) = highlight_code(&code_lang, &code_buf) {
+                        // syntect wraps output in <pre style="background-color:...;">;
+                        // strip that and use our CSS variables instead.
+                        let patched = if let Some(start) = highlighted.find("style=\"") {
+                            let after_style = start + 7; // past style="
+                            if let Some(end_quote) = highlighted[after_style..].find('"') {
+                                format!(
+                                    "{}class=\"highlighted-code\"{}",
+                                    &highlighted[..start],
+                                    &highlighted[after_style + end_quote + 1..]
+                                )
+                            } else {
+                                highlighted
+                            }
+                        } else {
+                            highlighted
+                        };
+                        html_output.push_str(&patched);
+                    } else {
+                        // Unknown language – render without highlighting
+                        html_output.push_str(&format!(
+                            "<pre><code class=\"language-{}\">{}</code></pre>",
+                            encode_text(&code_lang),
+                            encode_text(&code_buf)
+                        ));
+                    }
+                } else {
+                    html_output.push_str(&format!(
+                        "<pre><code>{}</code></pre>",
+                        encode_text(&code_buf)
+                    ));
+                }
+                i += 1;
+                continue;
+            }
+            Event::Text(t) if in_code_block => {
+                code_buf.push_str(t);
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        // For non-code-block events, render normally via pulldown-cmark
+        let single = std::iter::once(events[i].clone());
+        pulldown_cmark::html::push_html(&mut html_output, single);
+        i += 1;
+    }
+
     html_output
 }
 
@@ -257,12 +402,22 @@ fn render_message(item: &ChatHistoryItem) -> String {
     let cls = role_class(role);
     let label = role_label(role);
     let content_text = msg.content.text();
+    let is_thinking = role == "thinking";
 
     let mut html = String::new();
     html.push_str(&format!("<div class=\"message {cls}\">\n"));
-    html.push_str(&format!(
-        "  <div class=\"message-header\"><span class=\"role-label\">{label}</span></div>\n"
-    ));
+
+    if is_thinking {
+        // Thinking sections are collapsible (expanded by default)
+        html.push_str("  <details open class=\"thinking-details\">\n");
+        html.push_str(&format!(
+            "    <summary class=\"message-header\"><span class=\"role-label\">{label}</span></summary>\n"
+        ));
+    } else {
+        html.push_str(&format!(
+            "  <div class=\"message-header\"><span class=\"role-label\">{label}</span></div>\n"
+        ));
+    }
 
     // Context items (collapsed by default)
     html.push_str(&render_context_items(&item.context_items));
@@ -290,11 +445,43 @@ fn render_message(item: &ChatHistoryItem) -> String {
         }
     }
 
+    if is_thinking {
+        html.push_str("  </details>\n");
+    }
+
     html.push_str("</div>\n");
     html
 }
 
-fn render_session(session: &Session) -> String {
+fn file_modified_date(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let dt: chrono::DateTime<chrono::Local> = modified.into();
+    Some(dt.format("%Y-%m-%d %H:%M").to_string())
+}
+
+/// Extract the model name from the session history.
+/// Looks through prompt logs for the first non-empty model title,
+/// falling back to the completion_options.model field.
+fn extract_model(session: &Session) -> Option<String> {
+    for item in &session.history {
+        if let Some(logs) = &item.prompt_logs {
+            for log in logs {
+                if !log.model_title.is_empty() {
+                    return Some(log.model_title.clone());
+                }
+                if let Some(opts) = &log.completion_options {
+                    if !opts.model.is_empty() {
+                        return Some(opts.model.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let title = if session.title.is_empty() {
         "Untitled Session"
     } else {
@@ -317,12 +504,23 @@ fn render_session(session: &Session) -> String {
     let date_str = session
         .date_created
         .as_deref()
-        .unwrap_or("Unknown date");
+        .map(|s| s.to_string())
+        .or_else(|| source_path.and_then(file_modified_date))
+        .unwrap_or_else(|| "Unknown date".to_string());
 
     let workspace = if session.workspace_directory.is_empty() {
         "N/A"
     } else {
         &session.workspace_directory
+    };
+
+    let model = extract_model(session);
+    let model_meta = match &model {
+        Some(m) => format!(
+            "\n      <span class=\"meta-item\">Model: <code>{}</code></span>",
+            encode_text(m)
+        ),
+        None => String::new(),
     };
 
     format!(
@@ -340,7 +538,7 @@ fn render_session(session: &Session) -> String {
     <h1>{title}</h1>
     <div class="session-meta">
       <span class="meta-item">Session: <code>{session_id}</code></span>
-      <span class="meta-item">Date: {date}</span>
+      <span class="meta-item">Date: {date}</span>{model_meta}
       <span class="meta-item">Workspace: <code>{workspace}</code></span>
       <span class="meta-item">{user_count} user messages &middot; {assistant_count} assistant messages</span>
     </div>
@@ -359,7 +557,8 @@ fn render_session(session: &Session) -> String {
         CSS = CSS,
         JS = JS,
         session_id = encode_text(&session.session_id),
-        date = encode_text(date_str),
+        date = encode_text(&date_str),
+        model_meta = model_meta,
         workspace = encode_text(workspace),
         user_count = user_count,
         assistant_count = assistant_count,
@@ -496,6 +695,22 @@ body {
 }
 .message.thinking .role-label { color: var(--thinking-label); }
 
+.thinking-details { width: 100%; }
+.thinking-details > summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.thinking-details > summary::-webkit-details-marker { display: none; }
+.thinking-details > summary .role-label::before {
+  content: '\25BC  ';
+  font-size: 0.65rem;
+  vertical-align: 1px;
+}
+.thinking-details:not([open]) > summary .role-label::before {
+  content: '\25B6  ';
+}
+
 .message-header {
   margin-bottom: 10px;
 }
@@ -584,6 +799,19 @@ body {
   padding: 0;
   border-radius: 0;
   font-size: inherit;
+}
+
+pre.highlighted-code {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--code-border);
+  overflow-x: auto;
+  margin: 0.75em 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
 }
 
 .message-content code {
@@ -813,7 +1041,7 @@ fn main() {
             continue;
         }
 
-        let html = render_session(&session);
+        let html = render_session(&session, Some(file.as_path()));
 
         let title = if session.title.is_empty() {
             &session.session_id
@@ -946,8 +1174,9 @@ mod tests {
     fn test_markdown_code_block() {
         let md = "```rust\nfn main() {}\n```";
         let html = markdown_to_html(md);
-        assert!(html.contains("<pre>"));
-        assert!(html.contains("<code"));
+        assert!(html.contains("<pre"));
+        // Syntax-highlighted blocks use inline <span> styles
+        assert!(html.contains("fn"));
     }
 
     #[test]
@@ -1019,11 +1248,12 @@ mod tests {
                     tool_calls: None,
                 },
                 context_items: vec![],
+                prompt_logs: None,
             }],
             date_created: Some("2025-01-01".to_string()),
         };
 
-        let html = render_session(&session);
+        let html = render_session(&session, None);
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("Test"));
         assert!(html.contains("User"));
