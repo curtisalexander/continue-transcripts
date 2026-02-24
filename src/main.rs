@@ -63,6 +63,8 @@ struct ChatHistoryItem {
     context_items: Vec<ContextItem>,
     #[serde(default)]
     prompt_logs: Option<Vec<PromptLog>>,
+    #[serde(default)]
+    tool_call_states: Option<Vec<ToolCallState>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -72,6 +74,8 @@ struct PromptLog {
     model_title: String,
     #[serde(default)]
     completion_options: Option<CompletionOptions>,
+    #[serde(default)]
+    prompt: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -79,6 +83,46 @@ struct PromptLog {
 struct CompletionOptions {
     #[serde(default)]
     model: String,
+    #[serde(default)]
+    tools: Option<Vec<ToolDef>>,
+}
+
+// ---------------------------------------------------------------------------
+// Tool definitions (from toolCallStates and completionOptions.tools)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ToolCallState {
+    #[serde(default)]
+    tool: Option<ToolDef>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ToolDef {
+    #[serde(default)]
+    function: Option<ToolFunction>,
+    #[serde(default)]
+    system_message_description: Option<SystemMessageDescription>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ToolFunction {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    parameters: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SystemMessageDescription {
+    #[serde(default)]
+    prefix: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -100,17 +144,6 @@ struct Usage {
     completion_tokens: u64,
     #[serde(default)]
     prompt_tokens: u64,
-    #[allow(dead_code)]
-    #[serde(default)]
-    completion_tokens_details: Option<CompletionTokensDetails>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct CompletionTokensDetails {
-    #[allow(dead_code)]
-    #[serde(default)]
-    reasoning_tokens: Option<u64>,
 }
 
 /// continue.dev `content` can be a plain string or an array of parts.
@@ -159,11 +192,7 @@ enum MessagePart {
     #[serde(alias = "text")]
     Text { text: String },
     #[serde(alias = "imageUrl", alias = "image_url")]
-    ImageUrl {
-        #[allow(dead_code)]
-        #[serde(default)]
-        url: Option<String>,
-    },
+    ImageUrl {},
     #[serde(other)]
     Unknown,
 }
@@ -173,12 +202,6 @@ enum MessagePart {
 struct ToolCallDelta {
     #[serde(default)]
     function: Option<ToolCallFunction>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    id: Option<String>,
-    #[allow(dead_code)]
-    #[serde(default, rename = "type")]
-    call_type: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -625,6 +648,43 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
         }
     }
 
+    // Edit tool — render file path + diff-style old/new
+    if name == "Edit" || name == "edit" {
+        let file_path = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        let old_str = obj.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+        let new_str = obj.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+        if !file_path.is_empty() && (!old_str.is_empty() || !new_str.is_empty()) {
+            let mut html = String::new();
+            html.push_str("<div class=\"tool-args-kv-group\">");
+            html.push_str(&format!(
+                "<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">file_path</span>: <code>{}</code></div>",
+                encode_text(file_path)
+            ));
+            // Show replace_all flag if present and true
+            if let Some(replace_all) = obj.get("replace_all").and_then(|v| v.as_bool()) {
+                if replace_all {
+                    html.push_str("<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">replace_all</span>: <code>true</code></div>");
+                }
+            }
+            html.push_str("<pre class=\"tool-diff\"><code>");
+            for line in old_str.lines() {
+                html.push_str(&format!(
+                    "<span class=\"diff-remove\">- {}</span>\n",
+                    encode_text(line)
+                ));
+            }
+            for line in new_str.lines() {
+                html.push_str(&format!(
+                    "<span class=\"diff-add\">+ {}</span>\n",
+                    encode_text(line)
+                ));
+            }
+            html.push_str("</code></pre>");
+            html.push_str("</div>");
+            return html;
+        }
+    }
+
     // Multiple keys — render as key: value pairs
     let all_simple = obj.values().all(|v| v.is_string() || v.is_number() || v.is_boolean());
     if all_simple && obj.len() <= 8 {
@@ -689,6 +749,25 @@ fn render_tool_calls(tool_calls: &[ToolCallDelta]) -> String {
     html
 }
 
+/// Extract a language token from a filename or path for syntax highlighting.
+/// Returns the file extension (without dot) which can be fed to `highlight_code`.
+fn lang_from_filename(name: &str) -> &str {
+    // Take the portion after the last '/' or '\'
+    let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    // Special filenames
+    match basename {
+        "Dockerfile" | "dockerfile" => return "Dockerfile",
+        "Makefile" | "makefile" | "GNUmakefile" => return "makefile",
+        _ => {}
+    }
+    // Extract extension
+    if let Some(ext_pos) = basename.rfind('.') {
+        &basename[ext_pos + 1..]
+    } else {
+        ""
+    }
+}
+
 fn render_context_items(items: &[ContextItem]) -> String {
     if items.is_empty() {
         return String::new();
@@ -712,9 +791,35 @@ fn render_context_items(items: &[ContextItem]) -> String {
             ));
         }
         if !item.content.is_empty() {
-            html.push_str("<pre class=\"context-content\"><code>");
-            html.push_str(&encode_text(&item.content));
-            html.push_str("</code></pre>");
+            let lang = lang_from_filename(&item.name);
+            if !lang.is_empty() {
+                if let Some(highlighted) = highlight_code(lang, &item.content) {
+                    // Strip syntect's inline background style, use our CSS class
+                    let patched = if let Some(start) = highlighted.find("style=\"") {
+                        let after_style = start + 7;
+                        if let Some(end_quote) = highlighted[after_style..].find('"') {
+                            format!(
+                                "{}class=\"highlighted-code context-content\"{}",
+                                &highlighted[..start],
+                                &highlighted[after_style + end_quote + 1..]
+                            )
+                        } else {
+                            highlighted
+                        }
+                    } else {
+                        highlighted
+                    };
+                    html.push_str(&patched);
+                } else {
+                    html.push_str("<pre class=\"context-content\"><code>");
+                    html.push_str(&encode_text(&item.content));
+                    html.push_str("</code></pre>");
+                }
+            } else {
+                html.push_str("<pre class=\"context-content\"><code>");
+                html.push_str(&encode_text(&item.content));
+                html.push_str("</code></pre>");
+            }
         }
         html.push_str("</div>");
     }
@@ -744,16 +849,52 @@ fn format_tokens(n: u64) -> String {
     }
 }
 
+/// Extract model title from a ChatHistoryItem's promptLogs.
+fn item_model(item: &ChatHistoryItem) -> Option<&str> {
+    item.prompt_logs.as_ref().and_then(|logs| {
+        logs.iter().find_map(|log| {
+            if !log.model_title.is_empty() {
+                Some(log.model_title.as_str())
+            } else {
+                log.completion_options
+                    .as_ref()
+                    .filter(|opts| !opts.model.is_empty())
+                    .map(|opts| opts.model.as_str())
+            }
+        })
+    })
+}
+
 /// Render a single message (user, assistant, system, thinking).
 /// Tool-result messages are rendered separately via `render_tool_result_inline`.
 /// `running_tokens` is the cumulative token total up to and including this message.
-fn render_message(item: &ChatHistoryItem, running_tokens: Option<(u64, u64)>) -> String {
+/// `model_name` is the model used for this turn (shown on assistant messages).
+fn render_message(
+    item: &ChatHistoryItem,
+    running_tokens: Option<(u64, u64)>,
+    model_name: Option<&str>,
+) -> String {
     let msg = &item.message;
     let role = msg.role.as_str();
     let cls = role_class(role);
     let label = role_label(role);
     let content_text = msg.content.text();
     let is_thinking = role == "thinking";
+
+    // Build model badge for assistant messages
+    let model_badge = if role == "assistant" {
+        model_name
+            .filter(|m| !m.is_empty())
+            .map(|m| {
+                format!(
+                    " <span class=\"model-badge\" title=\"Model\">{}</span>",
+                    encode_text(m)
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     // Build token badge HTML
     let token_badge = if let Some(usage) = &msg.usage {
@@ -786,30 +927,22 @@ fn render_message(item: &ChatHistoryItem, running_tokens: Option<(u64, u64)>) ->
         // Thinking sections are collapsible (default **collapsed**)
         html.push_str("  <details class=\"thinking-details\">\n");
         html.push_str(&format!(
-            "    <summary class=\"message-header\"><span class=\"role-label\">{label}</span>{token_badge}</summary>\n"
+            "    <summary class=\"message-header\"><span class=\"role-label\">{label}</span>{model_badge}{token_badge}</summary>\n"
         ));
     } else {
         html.push_str(&format!(
-            "  <div class=\"message-header\"><span class=\"role-label\">{label}</span>{token_badge}</div>\n"
+            "  <div class=\"message-header\"><span class=\"role-label\">{label}</span>{model_badge}{token_badge}</div>\n"
         ));
     }
 
     // Context items (collapsed by default)
     html.push_str(&render_context_items(&item.context_items));
 
-    // Main content
+    // Main content — render all roles as markdown (users write code blocks,
+    // lists, and formatting too)
     if !msg.content.is_empty() {
         html.push_str("  <div class=\"message-content\">\n");
-        if role == "user" {
-            // For user messages render as plain text (they are usually short prompts)
-            html.push_str(&format!(
-                "    <p>{}</p>\n",
-                encode_text(&content_text)
-            ));
-        } else {
-            // For assistant / system / thinking — render markdown
-            html.push_str(&format!("    {}\n", markdown_to_html(&content_text)));
-        }
+        html.push_str(&format!("    {}\n", markdown_to_html(&content_text)));
         html.push_str("  </div>\n");
     }
 
@@ -833,7 +966,13 @@ fn render_message(item: &ChatHistoryItem, running_tokens: Option<(u64, u64)>) ->
 
 /// Render a tool result message as a collapsible `<details>` block.
 /// `tool_name` is the name of the tool call this result responds to (if known).
-fn render_tool_result_inline(item: &ChatHistoryItem, tool_name: &str) -> String {
+/// `tool_args` is the JSON arguments string from the corresponding tool call,
+/// used to infer file extensions for syntax highlighting.
+fn render_tool_result_inline(
+    item: &ChatHistoryItem,
+    tool_name: &str,
+    tool_args: &str,
+) -> String {
     let content_text = item.message.content.text();
     let label = if tool_name.is_empty() {
         "Tool Result".to_string()
@@ -857,15 +996,80 @@ fn render_tool_result_inline(item: &ChatHistoryItem, tool_name: &str) -> String 
             html.push_str(&ansi_to_html(&content_text));
             html.push_str("</code></pre>\n");
         } else {
-            html.push_str("        <pre class=\"tool-result-pre\"><code>");
-            html.push_str(&encode_text(&content_text));
-            html.push_str("</code></pre>\n");
+            // For Read/read_file results, try to syntax-highlight based on
+            // the file extension from the tool arguments.
+            let highlighted = if tool_name == "Read" || tool_name == "read_file" {
+                try_highlight_read_result(tool_args, &content_text)
+            } else {
+                None
+            };
+            if let Some(hl) = highlighted {
+                html.push_str("        ");
+                html.push_str(&hl);
+                html.push_str("\n");
+            } else {
+                html.push_str("        <pre class=\"tool-result-pre\"><code>");
+                html.push_str(&encode_text(&content_text));
+                html.push_str("</code></pre>\n");
+            }
         }
     }
 
     html.push_str("      </div>\n");
     html.push_str("    </details>\n");
     html
+}
+
+/// Attempt to syntax-highlight the content of a Read tool result.
+/// Extracts the file path from the JSON arguments, strips line-number prefixes
+/// (e.g. "     1\t..."), and applies syntax highlighting based on file extension.
+fn try_highlight_read_result(tool_args: &str, content: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(tool_args).ok()?;
+    let file_path = parsed
+        .get("file_path")
+        .or_else(|| parsed.get("filepath"))
+        .and_then(|v| v.as_str())?;
+    let lang = lang_from_filename(file_path);
+    if lang.is_empty() {
+        return None;
+    }
+
+    // Strip line-number prefixes that continue.dev's Read tool adds
+    // (pattern: optional spaces + digits + tab)
+    let stripped: String = content
+        .lines()
+        .map(|line| {
+            // Match "  123\t..." style line-number prefixes
+            if let Some(tab_pos) = line.find('\t') {
+                let prefix = &line[..tab_pos];
+                if prefix.trim().chars().all(|c| c.is_ascii_digit()) {
+                    return &line[tab_pos + 1..];
+                }
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let highlighted = highlight_code(lang, &stripped)?;
+
+    // Patch syntect's inline style to use our CSS class
+    let patched = if let Some(start) = highlighted.find("style=\"") {
+        let after_style = start + 7;
+        if let Some(end_quote) = highlighted[after_style..].find('"') {
+            format!(
+                "{}class=\"highlighted-code tool-result-pre\"{}",
+                &highlighted[..start],
+                &highlighted[after_style + end_quote + 1..]
+            )
+        } else {
+            highlighted
+        }
+    } else {
+        highlighted
+    };
+
+    Some(patched)
 }
 
 /// Extract tool descriptions from a system prompt.
@@ -939,76 +1143,6 @@ fn collect_tool_names(history: &[ChatHistoryItem]) -> Vec<String> {
     names
 }
 
-/// Render the tools reference panel.
-/// Each tool gets its own collapsible section with full details.
-fn render_tools_reference(
-    tool_names: &[String],
-    tool_descriptions: &[(String, String, String)],
-) -> String {
-    if tool_names.is_empty() {
-        return String::new();
-    }
-
-    let mut html = String::new();
-    html.push_str("<details class=\"tools-reference\">\n");
-    html.push_str("  <summary>Tools Used (");
-    html.push_str(&tool_names.len().to_string());
-    html.push_str(")</summary>\n");
-    html.push_str("  <div class=\"tools-reference-content\">\n");
-
-    // Build lookups from description list
-    let short_map: std::collections::HashMap<&str, &str> = tool_descriptions
-        .iter()
-        .map(|(name, short, _)| (name.as_str(), short.as_str()))
-        .collect();
-    let full_map: std::collections::HashMap<&str, &str> = tool_descriptions
-        .iter()
-        .map(|(name, _, full)| (name.as_str(), full.as_str()))
-        .collect();
-
-    for name in tool_names {
-        let has_full = full_map.get(name.as_str()).is_some_and(|f| !f.is_empty());
-        if has_full {
-            html.push_str("    <details class=\"tool-ref-item-details\">\n");
-            html.push_str(&format!(
-                "      <summary class=\"tool-ref-item-summary\"><span class=\"tool-ref-name\">{}</span>",
-                encode_text(name)
-            ));
-            if let Some(short) = short_map.get(name.as_str()) {
-                html.push_str(&format!(
-                    " <span class=\"tool-ref-short\">&mdash; {}</span>",
-                    encode_text(short)
-                ));
-            }
-            html.push_str("</summary>\n");
-            html.push_str("      <div class=\"tool-ref-full\">\n");
-            if let Some(full) = full_map.get(name.as_str()) {
-                html.push_str(&format!("        {}\n", markdown_to_html(full)));
-            }
-            html.push_str("      </div>\n");
-            html.push_str("    </details>\n");
-        } else {
-            // No full description available — render as simple item
-            html.push_str("    <div class=\"tool-ref-item\">\n");
-            html.push_str(&format!(
-                "      <div class=\"tool-ref-name\">{}</div>\n",
-                encode_text(name)
-            ));
-            if let Some(short) = short_map.get(name.as_str()) {
-                html.push_str(&format!(
-                    "      <div class=\"tool-ref-desc\">{}</div>\n",
-                    encode_text(short)
-                ));
-            }
-            html.push_str("    </div>\n");
-        }
-    }
-
-    html.push_str("  </div>\n");
-    html.push_str("</details>\n");
-    html
-}
-
 fn file_modified_date(path: &Path) -> Option<String> {
     let meta = fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
@@ -1037,6 +1171,294 @@ fn extract_model(session: &Session) -> Option<String> {
     None
 }
 
+/// Extract the system prompt from the session.
+///
+/// Prefer an explicit system-role message in the history — this is
+/// the cleanest, most direct representation of the system prompt.
+///
+/// Fall back to `promptLogs[].prompt` which contains the full
+/// text-formatted prompt sent to the model (all messages concatenated,
+/// not just the system portion).
+fn extract_system_prompt(session: &Session) -> (String, Option<usize>) {
+    // Primary: first system message in history
+    for (idx, item) in session.history.iter().enumerate() {
+        if item.message.role == "system" {
+            let text = item.message.content.text();
+            if !text.is_empty() {
+                return (text, Some(idx));
+            }
+        }
+    }
+
+    // Fallback: promptLogs[].prompt — may contain the full conversation
+    // text, not just the system prompt, but is better than nothing.
+    for item in &session.history {
+        if let Some(logs) = &item.prompt_logs {
+            for log in logs {
+                if !log.prompt.is_empty() {
+                    return (log.prompt.clone(), None);
+                }
+            }
+        }
+    }
+
+    (String::new(), None)
+}
+
+/// Structured tool info extracted from toolCallStates or completionOptions.
+struct ExtractedTool {
+    name: String,
+    description: String,
+    system_message_prefix: String,
+    parameters: Option<serde_json::Value>,
+}
+
+/// Extract tool definitions from toolCallStates[].tool across the session,
+/// falling back to completionOptions.tools in promptLogs.
+fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
+    let mut tools: Vec<ExtractedTool> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // First: collect from toolCallStates
+    for item in &session.history {
+        if let Some(states) = &item.tool_call_states {
+            for state in states {
+                if let Some(tool_def) = &state.tool {
+                    if let Some(func) = &tool_def.function {
+                        if !func.name.is_empty() && seen.insert(func.name.clone()) {
+                            tools.push(ExtractedTool {
+                                name: func.name.clone(),
+
+                                description: func.description.clone(),
+                                system_message_prefix: tool_def
+                                    .system_message_description
+                                    .as_ref()
+                                    .map_or(String::new(), |s| s.prefix.clone()),
+                                parameters: func.parameters.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Second: collect from completionOptions.tools in promptLogs
+    for item in &session.history {
+        if let Some(logs) = &item.prompt_logs {
+            for log in logs {
+                if let Some(opts) = &log.completion_options {
+                    if let Some(opt_tools) = &opts.tools {
+                        for tool_def in opt_tools {
+                            if let Some(func) = &tool_def.function {
+                                if !func.name.is_empty() && seen.insert(func.name.clone()) {
+                                    tools.push(ExtractedTool {
+                                        name: func.name.clone(),
+        
+                                        description: func.description.clone(),
+                                        system_message_prefix: tool_def
+                                            .system_message_description
+                                            .as_ref()
+                                            .map_or(String::new(), |s| s.prefix.clone()),
+                                        parameters: func.parameters.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    tools
+}
+
+/// Render tool info from structured ExtractedTool data (preferred over
+/// text-parsing from the system prompt).
+fn render_tools_reference_from_defs(
+    tool_names: &[String],
+    tool_defs: &[ExtractedTool],
+    text_descriptions: &[(String, String, String)],
+) -> String {
+    if tool_names.is_empty() {
+        return String::new();
+    }
+
+    // Build lookup from structured tool defs
+    let def_map: std::collections::HashMap<&str, &ExtractedTool> = tool_defs
+        .iter()
+        .map(|t| (t.name.as_str(), t))
+        .collect();
+
+    // Build fallback lookup from text-parsed descriptions
+    let text_short_map: std::collections::HashMap<&str, &str> = text_descriptions
+        .iter()
+        .map(|(name, short, _)| (name.as_str(), short.as_str()))
+        .collect();
+    let text_full_map: std::collections::HashMap<&str, &str> = text_descriptions
+        .iter()
+        .map(|(name, _, full)| (name.as_str(), full.as_str()))
+        .collect();
+
+    let mut html = String::new();
+    html.push_str("<details class=\"tools-reference\">\n");
+    html.push_str("  <summary>Tools Used (");
+    html.push_str(&tool_names.len().to_string());
+    html.push_str(")</summary>\n");
+    html.push_str("  <div class=\"tools-reference-content\">\n");
+
+    for name in tool_names {
+        if let Some(tool) = def_map.get(name.as_str()) {
+            // Use structured tool definition
+            let has_content = !tool.description.is_empty()
+                || !tool.system_message_prefix.is_empty()
+                || tool.parameters.is_some();
+
+            if has_content {
+                html.push_str("    <details class=\"tool-ref-item-details\">\n");
+                html.push_str(&format!(
+                    "      <summary class=\"tool-ref-item-summary\"><span class=\"tool-ref-name\">{}</span>",
+                    encode_text(name)
+                ));
+                // Short description: prefer systemMessageDescription.prefix, else first line of description
+                let short = if !tool.system_message_prefix.is_empty() {
+                    &tool.system_message_prefix
+                } else if !tool.description.is_empty() {
+                    tool.description.lines().next().unwrap_or("")
+                } else {
+                    ""
+                };
+                if !short.is_empty() {
+                    html.push_str(&format!(
+                        " <span class=\"tool-ref-short\">&mdash; {}</span>",
+                        encode_text(short)
+                    ));
+                }
+                html.push_str("</summary>\n");
+                html.push_str("      <div class=\"tool-ref-full\">\n");
+
+                // Full description
+                if !tool.description.is_empty() {
+                    html.push_str(&format!(
+                        "        {}\n",
+                        markdown_to_html(&tool.description)
+                    ));
+                }
+
+                // Parameters from JSON Schema
+                if let Some(params) = &tool.parameters {
+                    html.push_str(&render_parameters_schema(params));
+                }
+
+                html.push_str("      </div>\n");
+                html.push_str("    </details>\n");
+            } else {
+                // No content, simple item
+                html.push_str("    <div class=\"tool-ref-item\">\n");
+                html.push_str(&format!(
+                    "      <div class=\"tool-ref-name\">{}</div>\n",
+                    encode_text(name)
+                ));
+                html.push_str("    </div>\n");
+            }
+        } else {
+            // Fall back to text-parsed descriptions
+            let has_full = text_full_map
+                .get(name.as_str())
+                .is_some_and(|f| !f.is_empty());
+            if has_full {
+                html.push_str("    <details class=\"tool-ref-item-details\">\n");
+                html.push_str(&format!(
+                    "      <summary class=\"tool-ref-item-summary\"><span class=\"tool-ref-name\">{}</span>",
+                    encode_text(name)
+                ));
+                if let Some(short) = text_short_map.get(name.as_str()) {
+                    html.push_str(&format!(
+                        " <span class=\"tool-ref-short\">&mdash; {}</span>",
+                        encode_text(short)
+                    ));
+                }
+                html.push_str("</summary>\n");
+                html.push_str("      <div class=\"tool-ref-full\">\n");
+                if let Some(full) = text_full_map.get(name.as_str()) {
+                    html.push_str(&format!("        {}\n", markdown_to_html(full)));
+                }
+                html.push_str("      </div>\n");
+                html.push_str("    </details>\n");
+            } else {
+                html.push_str("    <div class=\"tool-ref-item\">\n");
+                html.push_str(&format!(
+                    "      <div class=\"tool-ref-name\">{}</div>\n",
+                    encode_text(name)
+                ));
+                if let Some(short) = text_short_map.get(name.as_str()) {
+                    html.push_str(&format!(
+                        "      <div class=\"tool-ref-desc\">{}</div>\n",
+                        encode_text(short)
+                    ));
+                }
+                html.push_str("    </div>\n");
+            }
+        }
+    }
+
+    html.push_str("  </div>\n");
+    html.push_str("</details>\n");
+    html
+}
+
+/// Render a JSON Schema parameters object as an HTML list.
+fn render_parameters_schema(params: &serde_json::Value) -> String {
+    let mut html = String::new();
+    if let Some(props) = params.get("properties").and_then(|p| p.as_object()) {
+        let required: Vec<&str> = params
+            .get("required")
+            .and_then(|r| r.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        html.push_str("        <div class=\"tool-params\">\n");
+        html.push_str(
+            "          <div class=\"tool-params-header\">Parameters</div>\n",
+        );
+        html.push_str("          <ul class=\"tool-params-list\">\n");
+        for (prop_name, prop_val) in props {
+            let type_str = prop_val
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("any");
+            let is_required = required.contains(&prop_name.as_str());
+            let req_label = if is_required { ", required" } else { "" };
+            let desc = prop_val
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("");
+            html.push_str(&format!(
+                "            <li><code>{}</code> <span class=\"tool-param-type\">({type_str}{req_label})</span>",
+                encode_text(prop_name)
+            ));
+            if !desc.is_empty() {
+                html.push_str(&format!(": {}", encode_text(desc)));
+            }
+            // Show enum values if present
+            if let Some(enum_vals) = prop_val.get("enum").and_then(|e| e.as_array()) {
+                let vals: Vec<String> = enum_vals
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| format!("<code>{}</code>", encode_text(s))))
+                    .collect();
+                if !vals.is_empty() {
+                    html.push_str(&format!(" [{}]", vals.join(", ")));
+                }
+            }
+            html.push_str("</li>\n");
+        }
+        html.push_str("          </ul>\n");
+        html.push_str("        </div>\n");
+    }
+    html
+}
+
 fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let title = if session.title.is_empty() {
         "Untitled Session"
@@ -1044,37 +1466,36 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         &session.title
     };
 
-    // --- Extract system prompt (first system message) ---
-    let mut system_prompt_html = String::new();
-    let mut system_prompt_content = String::new();
-    let mut system_prompt_idx: Option<usize> = None;
+    // --- Extract system prompt (prefer system message, fallback to promptLogs) ---
+    let (system_prompt_content, system_prompt_idx) = extract_system_prompt(session);
 
-    for (idx, item) in session.history.iter().enumerate() {
-        if item.message.role == "system" {
-            system_prompt_idx = Some(idx);
-            system_prompt_content = item.message.content.text();
-            break;
-        }
-    }
-
-    if !system_prompt_content.is_empty() {
-        system_prompt_html = format!(
+    let system_prompt_html = if !system_prompt_content.is_empty() {
+        format!(
             "<details class=\"system-prompt\">\n  \
                 <summary>System Prompt</summary>\n  \
                 <div class=\"system-prompt-content\">\n    {}\n  </div>\n\
              </details>\n",
             markdown_to_html(&system_prompt_content)
-        );
-    }
+        )
+    } else {
+        String::new()
+    };
 
     // --- Collect tool names and descriptions ---
     let tool_names = collect_tool_names(&session.history);
-    let tool_descriptions = if !system_prompt_content.is_empty() {
+
+    // Try structured tool definitions first (from toolCallStates / completionOptions)
+    let tool_defs = extract_tool_defs(session);
+
+    // Also parse text-based descriptions from system prompt as fallback
+    let text_descriptions = if !system_prompt_content.is_empty() {
         extract_tool_descriptions(&system_prompt_content)
     } else {
         Vec::new()
     };
-    let tools_reference_html = render_tools_reference(&tool_names, &tool_descriptions);
+
+    let tools_reference_html =
+        render_tools_reference_from_defs(&tool_names, &tool_defs, &text_descriptions);
 
     // --- Check if any messages have token usage data ---
     let has_any_usage = session.history.iter().any(|item| item.message.usage.is_some());
@@ -1085,6 +1506,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let mut assistant_count = 0u32;
     let mut running_prompt_tokens: u64 = 0;
     let mut running_completion_tokens: u64 = 0;
+    let mut last_model: Option<String> = None; // tracks latest model from promptLogs
     let history = &session.history;
     let len = history.len();
     let mut i = 0;
@@ -1097,6 +1519,11 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         if Some(i) == system_prompt_idx {
             i += 1;
             continue;
+        }
+
+        // Track the latest model from promptLogs on any item
+        if let Some(m) = item_model(item) {
+            last_model = Some(m.to_string());
         }
 
         // Update running token totals if this message has usage data
@@ -1113,12 +1540,13 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         match role {
             "user" => {
                 user_count += 1;
-                messages_html.push_str(&render_message(item, running));
+                messages_html.push_str(&render_message(item, running, None));
                 i += 1;
             }
             "assistant" => {
                 assistant_count += 1;
-                let mut msg_html = render_message(item, running);
+                let mut msg_html =
+                    render_message(item, running, last_model.as_deref());
 
                 // Count how many tool calls this assistant message has
                 let call_count = item
@@ -1128,14 +1556,18 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
                     .map_or(0, |c| c.len());
 
                 if call_count > 0 {
-                    // Collect the tool call names for matching with results
-                    let call_names: Vec<String> = item
+                    // Collect tool call names and args for matching with results
+                    let call_info: Vec<(String, String)> = item
                         .message
                         .tool_calls
                         .as_ref()
                         .unwrap()
                         .iter()
-                        .filter_map(|tc| tc.function.as_ref().map(|f| f.name.clone()))
+                        .filter_map(|tc| {
+                            tc.function
+                                .as_ref()
+                                .map(|f| (f.name.clone(), f.arguments.clone()))
+                        })
                         .collect();
 
                     // Look ahead for consecutive tool-result messages
@@ -1143,13 +1575,19 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
                     let mut result_idx = 0;
                     let mut j = i + 1;
                     while j < len && history[j].message.role == "tool" {
-                        let tool_name = if result_idx < call_names.len() {
-                            &call_names[result_idx]
+                        let (tool_name, tool_args) = if result_idx < call_info.len() {
+                            (
+                                call_info[result_idx].0.as_str(),
+                                call_info[result_idx].1.as_str(),
+                            )
                         } else {
-                            ""
+                            ("", "")
                         };
-                        tool_results_html
-                            .push_str(&render_tool_result_inline(&history[j], tool_name));
+                        tool_results_html.push_str(&render_tool_result_inline(
+                            &history[j],
+                            tool_name,
+                            tool_args,
+                        ));
                         result_idx += 1;
                         j += 1;
                     }
@@ -1182,7 +1620,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
                 messages_html.push_str(&msg_html);
             }
             "thinking" => {
-                messages_html.push_str(&render_message(item, running));
+                messages_html.push_str(&render_message(item, running, None));
                 i += 1;
             }
             "tool" => {
@@ -1190,14 +1628,14 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
                 // Render standalone with collapsible wrapper
                 let mut html = String::new();
                 html.push_str("<div class=\"message tool-result\">\n");
-                html.push_str(&render_tool_result_inline(item, ""));
+                html.push_str(&render_tool_result_inline(item, "", ""));
                 html.push_str("</div>\n");
                 messages_html.push_str(&html);
                 i += 1;
             }
             _ => {
                 // system (non-first) or other roles — render normally
-                messages_html.push_str(&render_message(item, running));
+                messages_html.push_str(&render_message(item, running, None));
                 i += 1;
             }
         }
@@ -1326,6 +1764,11 @@ const CSS: &str = r#"<style>
 
   --inline-code-bg: #f1f5f9;
   --inline-code-text: #0f172a;
+
+  --diff-add-bg: #1a2e1a;
+  --diff-add-text: #7ee787;
+  --diff-remove-bg: #2e1a1a;
+  --diff-remove-text: #f47067;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1439,6 +1882,20 @@ body {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+/* ----- Model badge ----- */
+.model-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: rgba(0,0,0,0.05);
+  padding: 1px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
+  vertical-align: middle;
+  font-style: italic;
 }
 
 /* ----- Token badges ----- */
@@ -1717,6 +2174,39 @@ pre.highlighted-code {
   font-size: 0.82rem;
 }
 
+/* ----- Tool parameters (from JSON Schema) ----- */
+.tool-params {
+  margin-top: 0.5em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--border);
+}
+
+.tool-params-header {
+  font-weight: 600;
+  font-size: 0.82rem;
+  margin-bottom: 0.3em;
+  color: var(--text);
+}
+
+.tool-params-list {
+  margin: 0.2em 0 0.5em 1.5em;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.tool-params-list li { margin-bottom: 0.2em; }
+.tool-params-list code {
+  background: var(--inline-code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+
+.tool-param-type {
+  color: var(--text-muted);
+  font-size: 0.8em;
+}
+
 /* ----- Tool calls ----- */
 .tool-call {
   background: var(--tool-call-bg);
@@ -1788,6 +2278,34 @@ pre.highlighted-code {
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 0.85em;
+}
+
+/* ----- Diff rendering for Edit tool calls ----- */
+.tool-diff {
+  background: var(--code-bg) !important;
+  color: var(--code-text) !important;
+  padding: 10px 14px !important;
+  border-radius: 6px;
+  font-size: 0.82rem !important;
+  max-height: 400px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.diff-remove {
+  display: block;
+  color: var(--diff-remove-text);
+  background: var(--diff-remove-bg);
+  padding: 0 4px;
+  margin: 0 -4px;
+}
+
+.diff-add {
+  display: block;
+  color: var(--diff-add-text);
+  background: var(--diff-add-bg);
+  padding: 0 4px;
+  margin: 0 -4px;
 }
 
 /* ----- Assistant tool group (nesting) ----- */
@@ -1882,7 +2400,7 @@ pre.highlighted-code {
   padding: 8px 12px !important;
   border-radius: 6px;
   font-size: 0.8rem !important;
-  max-height: 200px;
+  max-height: 500px;
   overflow-y: auto;
 }
 
@@ -2139,6 +2657,7 @@ fn main() {
     let mut index_entries: Vec<(String, String, String)> = Vec::new();
     let mut used_filenames = std::collections::HashSet::new();
     let mut files_written = 0u32;
+    let mut files_unchanged = 0u32;
     let mut files_skipped = 0u32;
     let mut files_errored = 0u32;
     let mut errors: Vec<(PathBuf, String)> = Vec::new();
@@ -2148,17 +2667,34 @@ fn main() {
             ProcessResult::Success(html, title, date, source) => {
                 let filename = unique_filename(title, &mut used_filenames);
                 let out_path = output_dir.join(&filename);
-                match fs::write(&out_path, html) {
-                    Ok(_) => {
-                        eprintln!("  \u{2705} {}", out_path.display());
-                        index_entries.push((title.clone(), filename, date.clone()));
-                        files_written += 1;
+
+                // Skip writing if the file already exists with identical content
+                let needs_write = match fs::read(&out_path) {
+                    Ok(existing) => existing != html.as_bytes(),
+                    Err(_) => true,
+                };
+
+                if needs_write {
+                    match fs::write(&out_path, html) {
+                        Ok(_) => {
+                            eprintln!("  \u{2705} {}", out_path.display());
+                            index_entries.push((title.clone(), filename, date.clone()));
+                            files_written += 1;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "  \u{274c} Failed to write {}: {}",
+                                out_path.display(),
+                                e
+                            );
+                            errors.push((source.clone(), format!("write failed: {}", e)));
+                            files_errored += 1;
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("  \u{274c} Failed to write {}: {}", out_path.display(), e);
-                        errors.push((source.clone(), format!("write failed: {}", e)));
-                        files_errored += 1;
-                    }
+                } else {
+                    // File exists and is unchanged — skip writing
+                    index_entries.push((title.clone(), filename, date.clone()));
+                    files_unchanged += 1;
                 }
             }
             ProcessResult::Skipped => {
@@ -2172,20 +2708,28 @@ fn main() {
         }
     }
 
-    // Generate index.html
+    // Generate index.html (also skip if unchanged)
     let mut index_written = false;
     if !index_entries.is_empty() {
         let index_html = render_index(&index_entries);
         let index_path = output_dir.join("index.html");
-        match fs::write(&index_path, &index_html) {
-            Ok(_) => {
-                eprintln!("  \u{2705} {}", index_path.display());
-                index_written = true;
+        let index_needs_write = match fs::read(&index_path) {
+            Ok(existing) => existing != index_html.as_bytes(),
+            Err(_) => true,
+        };
+        if index_needs_write {
+            match fs::write(&index_path, &index_html) {
+                Ok(_) => {
+                    eprintln!("  \u{2705} {}", index_path.display());
+                    index_written = true;
+                }
+                Err(e) => {
+                    eprintln!("  \u{274c} Failed to write index: {}", e);
+                    files_errored += 1;
+                }
             }
-            Err(e) => {
-                eprintln!("  \u{274c} Failed to write index: {}", e);
-                files_errored += 1;
-            }
+        } else {
+            index_written = true; // exists and unchanged
         }
     }
 
@@ -2202,6 +2746,9 @@ fn main() {
         files_written,
         if index_written { 1 } else { 0 }
     );
+    if files_unchanged > 0 {
+        eprintln!("  Unchanged:         {}", files_unchanged);
+    }
     if files_skipped > 0 {
         eprintln!("  Skipped:           {}", files_skipped);
     }
@@ -2431,6 +2978,7 @@ mod tests {
                 },
                 context_items: vec![],
                 prompt_logs: None,
+                tool_call_states: None,
             }],
             date_created: Some("2025-01-01".to_string()),
         };
@@ -2521,20 +3069,136 @@ mod tests {
     }
 
     #[test]
-    fn test_render_tool_args_edit_multikey() {
+    fn test_render_tool_args_edit_diff_style() {
         let result = render_tool_args(
             "Edit",
             r#"{"file_path": "test.rs", "old_string": "foo", "new_string": "bar"}"#,
         );
+        // Edit renders as a diff with file_path and old/new lines
         assert!(result.contains("file_path"));
-        assert!(result.contains("old_string"));
-        assert!(result.contains("new_string"));
+        assert!(result.contains("test.rs"));
+        assert!(result.contains("diff-remove"));
+        assert!(result.contains("diff-add"));
+        assert!(result.contains("- foo"));
+        assert!(result.contains("+ bar"));
+    }
+
+    #[test]
+    fn test_render_tool_args_edit_multiline_diff() {
+        let result = render_tool_args(
+            "Edit",
+            r#"{"file_path": "app.ts", "old_string": "line1\nline2", "new_string": "new1\nnew2\nnew3"}"#,
+        );
+        assert!(result.contains("tool-diff"));
+        assert!(result.contains("- line1"));
+        assert!(result.contains("- line2"));
+        assert!(result.contains("+ new1"));
+        assert!(result.contains("+ new2"));
+        assert!(result.contains("+ new3"));
     }
 
     #[test]
     fn test_render_tool_args_invalid_json() {
         let result = render_tool_args("Unknown", "not json at all");
         assert!(result.contains("not json at all"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Language detection from filenames
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lang_from_filename() {
+        assert_eq!(lang_from_filename("src/auth/middleware.ts"), "ts");
+        assert_eq!(lang_from_filename("main.rs"), "rs");
+        assert_eq!(lang_from_filename("/home/user/project/app.py"), "py");
+        assert_eq!(lang_from_filename("Dockerfile"), "Dockerfile");
+        assert_eq!(lang_from_filename("Makefile"), "makefile");
+        assert_eq!(lang_from_filename("no-extension"), "");
+    }
+
+    #[test]
+    fn test_lang_from_filename_windows_path() {
+        assert_eq!(lang_from_filename("C:\\Users\\test\\file.tsx"), "tsx");
+    }
+
+    // -----------------------------------------------------------------------
+    // Context item syntax highlighting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_context_items_syntax_highlighted() {
+        let items = vec![ContextItem {
+            name: "src/app.ts".to_string(),
+            description: "Main app".to_string(),
+            content: "const x: number = 42;".to_string(),
+        }];
+        let html = render_context_items(&items);
+        // Should use highlighted-code class for TypeScript
+        assert!(html.contains("highlighted-code") || html.contains("context-content"));
+        assert!(html.contains("src/app.ts"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Read result syntax highlighting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_try_highlight_read_result() {
+        let args = r#"{"file_path": "/home/user/test.rs"}"#;
+        let content = "     1\tfn main() {\n     2\t    println!(\"hello\");\n     3\t}";
+        let result = try_highlight_read_result(args, content);
+        assert!(result.is_some());
+        let hl = result.unwrap();
+        assert!(hl.contains("highlighted-code"));
+    }
+
+    #[test]
+    fn test_try_highlight_read_result_no_extension() {
+        let args = r#"{"file_path": "/home/user/README"}"#;
+        let content = "just some text";
+        let result = try_highlight_read_result(args, content);
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Model badge
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_model_badge_on_assistant() {
+        let item = ChatHistoryItem {
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: MessageContent::Text("Hello".to_string()),
+                tool_calls: None,
+                usage: None,
+            },
+            context_items: vec![],
+            prompt_logs: None,
+            tool_call_states: None,
+        };
+        let html = render_message(&item, None, Some("Claude 3.5 Sonnet"));
+        assert!(html.contains("model-badge"));
+        assert!(html.contains("Claude 3.5 Sonnet"));
+    }
+
+    #[test]
+    fn test_no_model_badge_on_user() {
+        let item = ChatHistoryItem {
+            message: ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("Hello".to_string()),
+                tool_calls: None,
+                usage: None,
+            },
+            context_items: vec![],
+            prompt_logs: None,
+            tool_call_states: None,
+        };
+        let html = render_message(&item, None, Some("Claude 3.5 Sonnet"));
+        // Model badge should not appear on user messages
+        assert!(!html.contains("model-badge"));
     }
 
     // -----------------------------------------------------------------------
@@ -2557,6 +3221,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -2567,6 +3232,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
@@ -2604,13 +3270,12 @@ mod tests {
                                 name: "Bash".to_string(),
                                 arguments: r#"{"command": "ls"}"#.to_string(),
                             }),
-                            id: Some("c1".to_string()),
-                            call_type: Some("function".to_string()),
                         }]),
                         usage: None,
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -2621,6 +3286,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
@@ -2652,9 +3318,10 @@ mod tests {
             },
             context_items: vec![],
             prompt_logs: None,
+            tool_call_states: None,
         };
 
-        let html = render_message(&item, None);
+        let html = render_message(&item, None, None);
         // Should be <details class="thinking-details"> WITHOUT the "open" attribute
         assert!(html.contains("<details class=\"thinking-details\">"));
         assert!(!html.contains("<details open"));
@@ -2687,22 +3354,19 @@ mod tests {
                                 name: "Bash".to_string(),
                                 arguments: String::new(),
                             }),
-                            id: None,
-                            call_type: None,
                         },
                         ToolCallDelta {
                             function: Some(ToolCallFunction {
                                 name: "Read".to_string(),
                                 arguments: String::new(),
                             }),
-                            id: None,
-                            call_type: None,
                         },
                     ]),
                     usage: None,
                 },
                 context_items: vec![],
                 prompt_logs: None,
+                tool_call_states: None,
             },
             ChatHistoryItem {
                 message: ChatMessage {
@@ -2713,13 +3377,12 @@ mod tests {
                             name: "Bash".to_string(), // duplicate
                             arguments: String::new(),
                         }),
-                        id: None,
-                        call_type: None,
                     }]),
                     usage: None,
                 },
                 context_items: vec![],
                 prompt_logs: None,
+                tool_call_states: None,
             },
         ];
 
@@ -2774,6 +3437,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -2783,11 +3447,11 @@ mod tests {
                         usage: Some(Usage {
                             prompt_tokens: 100,
                             completion_tokens: 50,
-                            completion_tokens_details: None,
                         }),
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
@@ -2819,6 +3483,7 @@ mod tests {
                 },
                 context_items: vec![],
                 prompt_logs: None,
+                tool_call_states: None,
             }],
             date_created: Some("2025-01-01".to_string()),
         };
@@ -2863,5 +3528,223 @@ mod tests {
         let (name2, _short2, full2) = &descs[1];
         assert_eq!(name2, "Read");
         assert!(full2.contains("`file_path`"));
+    }
+
+    // -----------------------------------------------------------------------
+    // System prompt extraction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_system_prompt_prefers_system_message() {
+        // System messages in history are the primary source
+        let session = Session {
+            session_id: "sys-msg-test".to_string(),
+            title: "System Message Test".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "system".to_string(),
+                        content: MessageContent::Text("You are a helpful assistant.".to_string()),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "user".to_string(),
+                        content: MessageContent::Text("Hello".to_string()),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let (prompt, idx) = extract_system_prompt(&session);
+        assert_eq!(prompt, "You are a helpful assistant.");
+        assert_eq!(idx, Some(0));
+    }
+
+    #[test]
+    fn test_system_prompt_falls_back_to_prompt_logs() {
+        // When there is no system message, fall back to promptLogs[].prompt
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let (prompt, idx) = extract_system_prompt(&session);
+        assert!(!prompt.is_empty());
+        assert!(prompt.contains("expert software engineer"));
+        assert!(prompt.contains("investigate before making changes"));
+        // No system message index since it came from promptLogs
+        assert!(idx.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool definition extraction from toolCallStates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_tool_defs_from_tool_call_states() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let defs = extract_tool_defs(&session);
+        // Should find Bash and Read from toolCallStates
+        assert!(defs.iter().any(|t| t.name == "Bash"));
+        assert!(defs.iter().any(|t| t.name == "Read"));
+
+        // Check Bash has correct data
+        let bash = defs.iter().find(|t| t.name == "Bash").unwrap();
+        assert!(bash.description.contains("Execute a shell command"));
+        assert_eq!(bash.system_message_prefix, "Execute shell commands and return output");
+        assert!(bash.parameters.is_some());
+
+        // Check parameters have property descriptions
+        let params = bash.parameters.as_ref().unwrap();
+        let command_desc = params
+            .get("properties")
+            .and_then(|p| p.get("command"))
+            .and_then(|c| c.get("description"))
+            .and_then(|d| d.as_str());
+        assert_eq!(command_desc, Some("The shell command to execute"));
+    }
+
+    #[test]
+    fn test_extract_tool_defs_from_completion_options() {
+        // Tools from completionOptions.tools (in promptLogs) when no toolCallStates
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let defs = extract_tool_defs(&session);
+        // Grep and Edit are only in completionOptions.tools (not in toolCallStates)
+        // since they were available but not used via toolCallStates in this fixture
+        assert!(defs.iter().any(|t| t.name == "Grep"));
+        assert!(defs.iter().any(|t| t.name == "Edit"));
+
+        let grep = defs.iter().find(|t| t.name == "Grep").unwrap();
+        assert!(grep.description.contains("Search for patterns"));
+        assert!(grep.parameters.is_some());
+
+        // Grep has an enum parameter
+        let params = grep.parameters.as_ref().unwrap();
+        let output_mode = params
+            .get("properties")
+            .and_then(|p| p.get("output_mode"));
+        assert!(output_mode.is_some());
+        let enum_vals = output_mode.unwrap().get("enum");
+        assert!(enum_vals.is_some());
+    }
+
+    #[test]
+    fn test_extract_tool_defs_deduplicates() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let defs = extract_tool_defs(&session);
+        // Bash appears in multiple toolCallStates but should only be extracted once
+        let bash_count = defs.iter().filter(|t| t.name == "Bash").count();
+        assert_eq!(bash_count, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Render parameters from JSON Schema
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_parameters_schema() {
+        let schema: serde_json::Value = serde_json::from_str(r#"{
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute"
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Timeout in milliseconds"
+                }
+            },
+            "required": ["command"]
+        }"#).unwrap();
+
+        let html = render_parameters_schema(&schema);
+        assert!(html.contains("Parameters"));
+        assert!(html.contains("command"));
+        assert!(html.contains("string, required"));
+        assert!(html.contains("The shell command to execute"));
+        assert!(html.contains("timeout"));
+        assert!(html.contains("number"));
+        assert!(!html.contains("number, required")); // timeout is not required
+    }
+
+    #[test]
+    fn test_render_parameters_schema_with_enum() {
+        let schema: serde_json::Value = serde_json::from_str(r#"{
+            "type": "object",
+            "properties": {
+                "output_mode": {
+                    "type": "string",
+                    "description": "Output mode",
+                    "enum": ["content", "files_with_matches", "count"]
+                }
+            },
+            "required": []
+        }"#).unwrap();
+
+        let html = render_parameters_schema(&schema);
+        assert!(html.contains("output_mode"));
+        assert!(html.contains("content"));
+        assert!(html.contains("files_with_matches"));
+        assert!(html.contains("count"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Full integration: promptLogs fixture renders correctly
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_prompt_logs_fixture() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        // System prompt from promptLogs should appear
+        assert!(html.contains("class=\"system-prompt\""));
+        assert!(html.contains("expert software engineer"));
+
+        // Tools reference panel should show structured tool info
+        assert!(html.contains("class=\"tools-reference\""));
+        assert!(html.contains("Bash"));
+        assert!(html.contains("Read"));
+
+        // Parameters should be rendered
+        assert!(html.contains("tool-params"));
+        assert!(html.contains("command"));
+        assert!(html.contains("file_path"));
+
+        // systemMessageDescription prefix should appear as short description
+        assert!(html.contains("Execute shell commands and return output"));
+
+        // Tool calls should appear
+        assert!(html.contains("tool-call-header"));
+
+        // Token usage should appear
+        assert!(html.contains("token-badge"));
+
+        // Model should be extracted from promptLogs
+        assert!(html.contains("Claude 3.5 Sonnet"));
     }
 }
