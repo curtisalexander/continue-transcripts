@@ -3160,7 +3160,7 @@ fn render_index(entries: &[(String, String, String)]) -> String {
     let mut rows = String::new();
     for (title, filename, date) in entries {
         rows.push_str(&format!(
-            "    <tr>\n      <td><a href=\"{filename}\">{title}</a></td>\n      <td>{date}</td>\n    </tr>\n",
+            "    <tr>\n      <td><a href=\"{filename}\">{title}</a></td>\n      <td style=\"white-space:nowrap\">{date}</td>\n    </tr>\n",
             filename = encode_text(filename),
             title = encode_text(title),
             date = encode_text(date),
@@ -3197,7 +3197,7 @@ fn render_index(entries: &[(String, String, String)]) -> String {
   </header>
   <input type="text" class="search-box" placeholder="Filter sessions by title or date\u2026" autocomplete="off">
   <table>
-    <thead><tr><th>Session</th><th>Date</th></tr></thead>
+    <thead><tr><th>Session</th><th style="width: 22ch;">Date</th></tr></thead>
     <tbody>
 {rows}
     </tbody>
