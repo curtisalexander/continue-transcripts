@@ -32,6 +32,14 @@ struct Cli {
     #[arg(long)]
     filter: Option<String>,
 
+    /// Only include sessions created on or after this date (YYYY-MM-DD)
+    #[arg(long)]
+    since: Option<String>,
+
+    /// Only include sessions created before this date (YYYY-MM-DD)
+    #[arg(long)]
+    before: Option<String>,
+
     /// Number of parallel worker threads (defaults to number of CPU cores)
     #[arg(short, long)]
     workers: Option<usize>,
@@ -1687,6 +1695,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
 {CSS}
 </head>
 <body>
+<button class="theme-toggle" aria-label="Toggle theme"></button>
 <div class="container">
   <header class="session-header">
     <h1>{title}</h1>
@@ -2414,6 +2423,113 @@ footer {
   color: var(--text-muted);
 }
 
+/* ----- Dark mode ----- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111827;
+    --card-bg: #1f2937;
+    --text: #f3f4f6;
+    --text-muted: #9ca3af;
+    --border: #374151;
+
+    --user-bg: #1e3a5f;
+    --user-border: #3b82f6;
+    --user-label: #93c5fd;
+
+    --assistant-bg: #1f2937;
+    --assistant-border: #9ca3af;
+    --assistant-label: #d1d5db;
+
+    --system-bg: #422006;
+    --system-border: #f59e0b;
+    --system-label: #fcd34d;
+
+    --tool-result-bg: #064e3b;
+    --tool-result-border: #10b981;
+    --tool-result-label: #6ee7b7;
+
+    --thinking-bg: #422006;
+    --thinking-border: #eab308;
+    --thinking-label: #fde68a;
+
+    --tool-call-bg: #2e1065;
+    --tool-call-border: #a78bfa;
+
+    --code-bg: #0f172a;
+    --code-text: #e2e8f0;
+    --code-border: #1e293b;
+
+    --inline-code-bg: #374151;
+    --inline-code-text: #e5e7eb;
+
+    --diff-add-bg: #1a2e1a;
+    --diff-add-text: #7ee787;
+    --diff-remove-bg: #2e1a1a;
+    --diff-remove-text: #f47067;
+  }
+}
+
+[data-theme="dark"] {
+    --bg: #111827;
+    --card-bg: #1f2937;
+    --text: #f3f4f6;
+    --text-muted: #9ca3af;
+    --border: #374151;
+
+    --user-bg: #1e3a5f;
+    --user-border: #3b82f6;
+    --user-label: #93c5fd;
+
+    --assistant-bg: #1f2937;
+    --assistant-border: #9ca3af;
+    --assistant-label: #d1d5db;
+
+    --system-bg: #422006;
+    --system-border: #f59e0b;
+    --system-label: #fcd34d;
+
+    --tool-result-bg: #064e3b;
+    --tool-result-border: #10b981;
+    --tool-result-label: #6ee7b7;
+
+    --thinking-bg: #422006;
+    --thinking-border: #eab308;
+    --thinking-label: #fde68a;
+
+    --tool-call-bg: #2e1065;
+    --tool-call-border: #a78bfa;
+
+    --code-bg: #0f172a;
+    --code-text: #e2e8f0;
+    --code-border: #1e293b;
+
+    --inline-code-bg: #374151;
+    --inline-code-text: #e5e7eb;
+
+    --diff-add-bg: #1a2e1a;
+    --diff-add-text: #7ee787;
+    --diff-remove-bg: #2e1a1a;
+    --diff-remove-text: #f47067;
+}
+
+/* ----- Theme toggle button ----- */
+.theme-toggle {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 100;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.theme-toggle:hover { opacity: 0.8; }
+
 /* ----- Responsive ----- */
 @media (max-width: 600px) {
   .container { padding: 12px 8px; }
@@ -2429,6 +2545,47 @@ footer {
 
 const JS: &str = r#"<script>
 document.addEventListener('DOMContentLoaded', function() {
+  // Theme toggle
+  (function() {
+    var html = document.documentElement;
+    var stored = localStorage.getItem('ct-theme');
+    if (stored) html.setAttribute('data-theme', stored);
+    var btn = document.querySelector('.theme-toggle');
+    if (btn) {
+      function updateIcon() {
+        var theme = html.getAttribute('data-theme');
+        if (!theme) {
+          // auto — check OS preference
+          var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          btn.textContent = dark ? '\u2600\uFE0F' : '\uD83C\uDF19';
+          btn.title = 'Theme: auto (' + (dark ? 'dark' : 'light') + '). Click to toggle.';
+        } else if (theme === 'dark') {
+          btn.textContent = '\u2600\uFE0F';
+          btn.title = 'Theme: dark. Click for light.';
+        } else {
+          btn.textContent = '\uD83C\uDF19';
+          btn.title = 'Theme: light. Click for dark.';
+        }
+      }
+      btn.addEventListener('click', function() {
+        var current = html.getAttribute('data-theme');
+        if (!current) {
+          var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var next = dark ? 'light' : 'dark';
+        } else if (current === 'dark') {
+          var next = 'light';
+        } else {
+          var next = 'dark';
+        }
+        html.setAttribute('data-theme', next);
+        localStorage.setItem('ct-theme', next);
+        updateIcon();
+      });
+      updateIcon();
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateIcon);
+    }
+  })();
+
   // Add language labels to fenced code blocks
   document.querySelectorAll('pre > code[class*="language-"]').forEach(function(el) {
     var lang = el.className.match(/language-(\S+)/);
@@ -2450,7 +2607,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
       var btn = document.createElement('button');
       btn.textContent = 'Show more';
-      btn.style.cssText = 'display:block;margin:6px auto 0;padding:4px 16px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;font-size:0.8rem;';
+      btn.style.cssText = 'display:block;margin:6px auto 0;padding:4px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--text-muted);cursor:pointer;font-size:0.8rem;';
       btn.addEventListener('click', function() {
         if (el.style.maxHeight === '300px') {
           el.style.maxHeight = 'none';
@@ -2474,7 +2631,7 @@ document.addEventListener('DOMContentLoaded', function() {
       var toggleBtn = document.createElement('button');
       toggleBtn.textContent = 'Expand all details';
       toggleBtn.className = 'expand-collapse-toggle';
-      toggleBtn.style.cssText = 'display:block;margin:0 auto 16px;padding:6px 20px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;font-size:0.82rem;';
+      toggleBtn.style.cssText = 'display:block;margin:0 auto 16px;padding:6px 20px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--text-muted);cursor:pointer;font-size:0.82rem;';
       var allExpanded = false;
       toggleBtn.addEventListener('click', function() {
         allExpanded = !allExpanded;
@@ -2508,6 +2665,30 @@ fn discover_session_files(path: &Path) -> Vec<PathBuf> {
     }
     files.sort();
     files
+}
+
+/// Parse a date string (YYYY-MM-DD) into a chrono NaiveDate.
+fn parse_date_filter(s: &str) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+}
+
+/// Extract a NaiveDate from a session date string (ISO 8601 or YYYY-MM-DD).
+fn parse_session_date(date_str: &str) -> Option<chrono::NaiveDate> {
+    // Try full ISO 8601 datetime first
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_str) {
+        return Some(dt.date_naive());
+    }
+    // Try plain date
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+        return Some(d);
+    }
+    // Try extracting YYYY-MM-DD prefix
+    if date_str.len() >= 10 {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(&date_str[..10], "%Y-%m-%d") {
+            return Some(d);
+        }
+    }
+    None
 }
 
 /// Maximum length for the base filename (before `.html` extension).
@@ -2635,6 +2816,20 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Validate date filters
+    let since_date = cli.since.as_deref().map(|s| {
+        parse_date_filter(s).unwrap_or_else(|| {
+            eprintln!("\u{274c} Invalid --since date: {:?} (expected YYYY-MM-DD)", s);
+            std::process::exit(1);
+        })
+    });
+    let before_date = cli.before.as_deref().map(|s| {
+        parse_date_filter(s).unwrap_or_else(|| {
+            eprintln!("\u{274c} Invalid --before date: {:?} (expected YYYY-MM-DD)", s);
+            std::process::exit(1);
+        })
+    });
+
     // Configure rayon thread pool if --workers is specified
     if let Some(workers) = cli.workers {
         let workers = workers.max(1); // at least 1
@@ -2691,6 +2886,38 @@ fn main() {
                     .to_lowercase()
                     .contains(&filter.to_lowercase())
                 {
+                    return ProcessResult::Skipped;
+                }
+            }
+
+            // Apply date range filters
+            if since_date.is_some() || before_date.is_some() {
+                let session_date = session
+                    .date_created
+                    .as_deref()
+                    .and_then(parse_session_date)
+                    .or_else(|| {
+                        // Fall back to file modification time
+                        file.metadata().ok()
+                            .and_then(|m| m.modified().ok())
+                            .map(|t| {
+                                let dt: chrono::DateTime<chrono::Local> = t.into();
+                                dt.date_naive()
+                            })
+                    });
+                if let Some(sd) = session_date {
+                    if let Some(since) = since_date {
+                        if sd < since {
+                            return ProcessResult::Skipped;
+                        }
+                    }
+                    if let Some(before) = before_date {
+                        if sd >= before {
+                            return ProcessResult::Skipped;
+                        }
+                    }
+                } else {
+                    // No date available — skip if we're filtering by date
                     return ProcessResult::Skipped;
                 }
             }
@@ -2904,9 +3131,13 @@ fn render_index(entries: &[(String, String, String)]) -> String {
   th {{ font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }}
   td a {{ color: var(--user-border); text-decoration: none; font-weight: 500; }}
   td a:hover {{ text-decoration: underline; }}
+  .search-box {{ width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; margin-bottom: 16px; background: var(--card-bg); color: var(--text); }}
+  .search-box::placeholder {{ color: var(--text-muted); }}
+  .no-results {{ text-align: center; padding: 24px; color: var(--text-muted); display: none; }}
 </style>
 </head>
 <body>
+<button class="theme-toggle" aria-label="Toggle theme"></button>
 <div class="container">
   <header class="session-header">
     <h1>Continue.dev Transcripts</h1>
@@ -2914,16 +3145,79 @@ fn render_index(entries: &[(String, String, String)]) -> String {
       <span class="meta-item">{count} session(s)</span>
     </div>
   </header>
+  <input type="text" class="search-box" placeholder="Filter sessions by title or date\u2026" autocomplete="off">
   <table>
     <thead><tr><th>Session</th><th>Date</th></tr></thead>
     <tbody>
 {rows}
     </tbody>
   </table>
+  <div class="no-results">No sessions match your filter.</div>
   <footer>
     <p>Generated by <strong>continue-transcripts</strong></p>
   </footer>
 </div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {{
+  // Theme toggle
+  (function() {{
+    var html = document.documentElement;
+    var stored = localStorage.getItem('ct-theme');
+    if (stored) html.setAttribute('data-theme', stored);
+    var btn = document.querySelector('.theme-toggle');
+    if (btn) {{
+      function updateIcon() {{
+        var theme = html.getAttribute('data-theme');
+        if (!theme) {{
+          var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          btn.textContent = dark ? '\u2600\uFE0F' : '\uD83C\uDF19';
+          btn.title = 'Theme: auto (' + (dark ? 'dark' : 'light') + '). Click to toggle.';
+        }} else if (theme === 'dark') {{
+          btn.textContent = '\u2600\uFE0F';
+          btn.title = 'Theme: dark. Click for light.';
+        }} else {{
+          btn.textContent = '\uD83C\uDF19';
+          btn.title = 'Theme: light. Click for dark.';
+        }}
+      }}
+      btn.addEventListener('click', function() {{
+        var current = html.getAttribute('data-theme');
+        if (!current) {{
+          var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var next = dark ? 'light' : 'dark';
+        }} else if (current === 'dark') {{
+          var next = 'light';
+        }} else {{
+          var next = 'dark';
+        }}
+        html.setAttribute('data-theme', next);
+        localStorage.setItem('ct-theme', next);
+        updateIcon();
+      }});
+      updateIcon();
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateIcon);
+    }}
+  }})();
+
+  // Search / filter
+  var input = document.querySelector('.search-box');
+  var rows = document.querySelectorAll('tbody tr');
+  var noResults = document.querySelector('.no-results');
+  if (input && rows.length) {{
+    input.addEventListener('input', function() {{
+      var q = input.value.toLowerCase();
+      var visible = 0;
+      rows.forEach(function(row) {{
+        var text = row.textContent.toLowerCase();
+        var match = !q || text.indexOf(q) !== -1;
+        row.style.display = match ? '' : 'none';
+        if (match) visible++;
+      }});
+      noResults.style.display = visible === 0 ? 'block' : 'none';
+    }});
+  }}
+}});
+</script>
 </body>
 </html>"##,
         CSS = CSS,
@@ -3029,6 +3323,48 @@ mod tests {
         );
         assert_eq!(extract_date_prefix("not-a-date"), None);
         assert_eq!(extract_date_prefix("short"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Date filter parsing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_date_filter() {
+        let d = parse_date_filter("2025-06-15");
+        assert!(d.is_some());
+        assert_eq!(d.unwrap().to_string(), "2025-06-15");
+
+        assert!(parse_date_filter("not-a-date").is_none());
+        assert!(parse_date_filter("2025/06/15").is_none());
+    }
+
+    #[test]
+    fn test_parse_session_date_iso() {
+        let d = parse_session_date("2025-06-15T10:30:00+00:00");
+        assert!(d.is_some());
+        assert_eq!(d.unwrap().to_string(), "2025-06-15");
+    }
+
+    #[test]
+    fn test_parse_session_date_plain() {
+        let d = parse_session_date("2025-06-15");
+        assert!(d.is_some());
+        assert_eq!(d.unwrap().to_string(), "2025-06-15");
+    }
+
+    #[test]
+    fn test_parse_session_date_prefix() {
+        // Handles "2025-06-15T10:30:00Z" (non-standard but with T prefix)
+        let d = parse_session_date("2025-06-15T10:30:00Z");
+        assert!(d.is_some());
+        assert_eq!(d.unwrap().to_string(), "2025-06-15");
+    }
+
+    #[test]
+    fn test_parse_session_date_invalid() {
+        assert!(parse_session_date("not-a-date").is_none());
+        assert!(parse_session_date("").is_none());
     }
 
     // -----------------------------------------------------------------------
