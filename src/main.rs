@@ -89,6 +89,28 @@ struct ChatMessage {
     content: MessageContent,
     #[serde(default)]
     tool_calls: Option<Vec<ToolCallDelta>>,
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Usage {
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[allow(dead_code)]
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CompletionTokensDetails {
+    #[allow(dead_code)]
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
 }
 
 /// continue.dev `content` can be a plain string or an array of parts.
@@ -700,15 +722,62 @@ fn render_context_items(items: &[ContextItem]) -> String {
     html
 }
 
+/// Format a token count as a compact human-readable string (e.g. "1,234" or "12.3k").
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 10_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else if n >= 1_000 {
+        // Add comma separator
+        let s = n.to_string();
+        let mut out = String::new();
+        for (i, c) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out.chars().rev().collect()
+    } else {
+        n.to_string()
+    }
+}
+
 /// Render a single message (user, assistant, system, thinking).
 /// Tool-result messages are rendered separately via `render_tool_result_inline`.
-fn render_message(item: &ChatHistoryItem) -> String {
+/// `running_tokens` is the cumulative token total up to and including this message.
+fn render_message(item: &ChatHistoryItem, running_tokens: Option<(u64, u64)>) -> String {
     let msg = &item.message;
     let role = msg.role.as_str();
     let cls = role_class(role);
     let label = role_label(role);
     let content_text = msg.content.text();
     let is_thinking = role == "thinking";
+
+    // Build token badge HTML
+    let token_badge = if let Some(usage) = &msg.usage {
+        let prompt_t = usage.prompt_tokens;
+        let comp_t = usage.completion_tokens;
+        let total = prompt_t + comp_t;
+        let mut badge = format!(
+            "<span class=\"token-badge\" title=\"Prompt: {} | Completion: {}\">{} tokens</span>",
+            format_tokens(prompt_t),
+            format_tokens(comp_t),
+            format_tokens(total)
+        );
+        if let Some((run_p, run_c)) = running_tokens {
+            badge.push_str(&format!(
+                " <span class=\"token-running\" title=\"Running total — Prompt: {} | Completion: {}\">(cumul. {})</span>",
+                format_tokens(run_p),
+                format_tokens(run_c),
+                format_tokens(run_p + run_c)
+            ));
+        }
+        badge
+    } else {
+        String::new()
+    };
 
     let mut html = String::new();
     html.push_str(&format!("<div class=\"message {cls}\">\n"));
@@ -717,11 +786,11 @@ fn render_message(item: &ChatHistoryItem) -> String {
         // Thinking sections are collapsible (default **collapsed**)
         html.push_str("  <details class=\"thinking-details\">\n");
         html.push_str(&format!(
-            "    <summary class=\"message-header\"><span class=\"role-label\">{label}</span></summary>\n"
+            "    <summary class=\"message-header\"><span class=\"role-label\">{label}</span>{token_badge}</summary>\n"
         ));
     } else {
         html.push_str(&format!(
-            "  <div class=\"message-header\"><span class=\"role-label\">{label}</span></div>\n"
+            "  <div class=\"message-header\"><span class=\"role-label\">{label}</span>{token_badge}</div>\n"
         ));
     }
 
@@ -801,44 +870,47 @@ fn render_tool_result_inline(item: &ChatHistoryItem, tool_name: &str) -> String 
 
 /// Extract tool descriptions from a system prompt.
 /// Looks for patterns like "### ToolName\nDescription text"
-fn extract_tool_descriptions(system_content: &str) -> Vec<(String, String)> {
-    let mut tools: Vec<(String, String)> = Vec::new();
+/// Returns (name, short_desc, full_content) tuples.
+fn extract_tool_descriptions(system_content: &str) -> Vec<(String, String, String)> {
+    let mut tools: Vec<(String, String, String)> = Vec::new();
     let lines: Vec<&str> = system_content.lines().collect();
     let mut i = 0;
 
     while i < lines.len() {
         let line = lines[i].trim();
-        // Match ### ToolName or ## ToolName
-        if (line.starts_with("### ") || line.starts_with("## ")) && !line.contains(' ') == false {
+        // Match ### ToolName headers (tools are listed under ### in system prompts)
+        if line.starts_with("### ") && !line.starts_with("#### ") {
             let header = line.trim_start_matches('#').trim();
-            // Check if it looks like a single-word tool name
+            // Check if it looks like a tool name: short, starts with uppercase
             if !header.is_empty()
                 && header.len() < 40
                 && !header.contains('.')
-                && header.chars().next().map_or(false, |c| c.is_uppercase())
+                && header.chars().next().is_some_and(|c| c.is_uppercase())
             {
-                // Collect description lines until next header or blank-blank
+                // Collect all lines until next ### or ## header
                 let mut desc_lines = Vec::new();
                 i += 1;
                 while i < lines.len() {
-                    let next = lines[i];
-                    if next.trim().starts_with("### ") || next.trim().starts_with("## ") {
+                    let next = lines[i].trim();
+                    // Stop at next ### or ## header
+                    if next.starts_with("### ") || (next.starts_with("## ") && !next.starts_with("### ")) {
                         break;
                     }
-                    desc_lines.push(next);
+                    desc_lines.push(lines[i]);
                     i += 1;
                 }
-                let desc = desc_lines
-                    .join("\n")
-                    .trim()
+                let full_content = desc_lines.join("\n").trim().to_string();
+                // Short description: first non-empty line(s) up to 3 lines
+                let short_desc = full_content
                     .lines()
-                    .take(3)
+                    .filter(|l| !l.trim().is_empty())
+                    .take(2)
                     .collect::<Vec<_>>()
                     .join(" ")
                     .trim()
                     .to_string();
-                if !desc.is_empty() {
-                    tools.push((header.to_string(), desc));
+                if !full_content.is_empty() {
+                    tools.push((header.to_string(), short_desc, full_content));
                 }
                 continue;
             }
@@ -868,9 +940,10 @@ fn collect_tool_names(history: &[ChatHistoryItem]) -> Vec<String> {
 }
 
 /// Render the tools reference panel.
+/// Each tool gets its own collapsible section with full details.
 fn render_tools_reference(
     tool_names: &[String],
-    tool_descriptions: &[(String, String)],
+    tool_descriptions: &[(String, String, String)],
 ) -> String {
     if tool_names.is_empty() {
         return String::new();
@@ -883,25 +956,52 @@ fn render_tools_reference(
     html.push_str(")</summary>\n");
     html.push_str("  <div class=\"tools-reference-content\">\n");
 
-    // Build a lookup from description list
-    let desc_map: std::collections::HashMap<&str, &str> = tool_descriptions
+    // Build lookups from description list
+    let short_map: std::collections::HashMap<&str, &str> = tool_descriptions
         .iter()
-        .map(|(name, desc)| (name.as_str(), desc.as_str()))
+        .map(|(name, short, _)| (name.as_str(), short.as_str()))
+        .collect();
+    let full_map: std::collections::HashMap<&str, &str> = tool_descriptions
+        .iter()
+        .map(|(name, _, full)| (name.as_str(), full.as_str()))
         .collect();
 
     for name in tool_names {
-        html.push_str("    <div class=\"tool-ref-item\">\n");
-        html.push_str(&format!(
-            "      <div class=\"tool-ref-name\">{}</div>\n",
-            encode_text(name)
-        ));
-        if let Some(desc) = desc_map.get(name.as_str()) {
+        let has_full = full_map.get(name.as_str()).is_some_and(|f| !f.is_empty());
+        if has_full {
+            html.push_str("    <details class=\"tool-ref-item-details\">\n");
             html.push_str(&format!(
-                "      <div class=\"tool-ref-desc\">{}</div>\n",
-                encode_text(desc)
+                "      <summary class=\"tool-ref-item-summary\"><span class=\"tool-ref-name\">{}</span>",
+                encode_text(name)
             ));
+            if let Some(short) = short_map.get(name.as_str()) {
+                html.push_str(&format!(
+                    " <span class=\"tool-ref-short\">&mdash; {}</span>",
+                    encode_text(short)
+                ));
+            }
+            html.push_str("</summary>\n");
+            html.push_str("      <div class=\"tool-ref-full\">\n");
+            if let Some(full) = full_map.get(name.as_str()) {
+                html.push_str(&format!("        {}\n", markdown_to_html(full)));
+            }
+            html.push_str("      </div>\n");
+            html.push_str("    </details>\n");
+        } else {
+            // No full description available — render as simple item
+            html.push_str("    <div class=\"tool-ref-item\">\n");
+            html.push_str(&format!(
+                "      <div class=\"tool-ref-name\">{}</div>\n",
+                encode_text(name)
+            ));
+            if let Some(short) = short_map.get(name.as_str()) {
+                html.push_str(&format!(
+                    "      <div class=\"tool-ref-desc\">{}</div>\n",
+                    encode_text(short)
+                ));
+            }
+            html.push_str("    </div>\n");
         }
-        html.push_str("    </div>\n");
     }
 
     html.push_str("  </div>\n");
@@ -976,10 +1076,15 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     };
     let tools_reference_html = render_tools_reference(&tool_names, &tool_descriptions);
 
+    // --- Check if any messages have token usage data ---
+    let has_any_usage = session.history.iter().any(|item| item.message.usage.is_some());
+
     // --- Render messages with tool-call/tool-result grouping ---
     let mut messages_html = String::new();
     let mut user_count = 0u32;
     let mut assistant_count = 0u32;
+    let mut running_prompt_tokens: u64 = 0;
+    let mut running_completion_tokens: u64 = 0;
     let history = &session.history;
     let len = history.len();
     let mut i = 0;
@@ -994,15 +1099,26 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
             continue;
         }
 
+        // Update running token totals if this message has usage data
+        if let Some(usage) = &item.message.usage {
+            running_prompt_tokens += usage.prompt_tokens;
+            running_completion_tokens += usage.completion_tokens;
+        }
+        let running = if has_any_usage && item.message.usage.is_some() {
+            Some((running_prompt_tokens, running_completion_tokens))
+        } else {
+            None
+        };
+
         match role {
             "user" => {
                 user_count += 1;
-                messages_html.push_str(&render_message(item));
+                messages_html.push_str(&render_message(item, running));
                 i += 1;
             }
             "assistant" => {
                 assistant_count += 1;
-                let mut msg_html = render_message(item);
+                let mut msg_html = render_message(item, running);
 
                 // Count how many tool calls this assistant message has
                 let call_count = item
@@ -1066,7 +1182,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
                 messages_html.push_str(&msg_html);
             }
             "thinking" => {
-                messages_html.push_str(&render_message(item));
+                messages_html.push_str(&render_message(item, running));
                 i += 1;
             }
             "tool" => {
@@ -1081,7 +1197,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
             }
             _ => {
                 // system (non-first) or other roles — render normally
-                messages_html.push_str(&render_message(item));
+                messages_html.push_str(&render_message(item, running));
                 i += 1;
             }
         }
@@ -1109,6 +1225,18 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         None => String::new(),
     };
 
+    let tokens_meta = if has_any_usage {
+        let total = running_prompt_tokens + running_completion_tokens;
+        format!(
+            "\n      <span class=\"meta-item\">Tokens: {} total (prompt: {} &middot; completion: {})</span>",
+            format_tokens(total),
+            format_tokens(running_prompt_tokens),
+            format_tokens(running_completion_tokens)
+        )
+    } else {
+        String::new()
+    };
+
     format!(
         r##"<!DOCTYPE html>
 <html lang="en">
@@ -1126,7 +1254,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
       <span class="meta-item">Session: <code>{session_id}</code></span>
       <span class="meta-item">Date: {date}</span>{model_meta}
       <span class="meta-item">Workspace: <code>{workspace}</code></span>
-      <span class="meta-item">{user_count} user messages &middot; {assistant_count} assistant messages</span>
+      <span class="meta-item">{user_count} user messages &middot; {assistant_count} assistant messages</span>{tokens_meta}
     </div>
   </header>
 {system_prompt}
@@ -1147,6 +1275,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         session_id = encode_text(&session.session_id),
         date = encode_text(&date_str),
         model_meta = model_meta,
+        tokens_meta = tokens_meta,
         workspace = encode_text(workspace),
         user_count = user_count,
         assistant_count = assistant_count,
@@ -1310,6 +1439,27 @@ body {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+/* ----- Token badges ----- */
+.token-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: rgba(0,0,0,0.06);
+  padding: 1px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.token-running {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+  cursor: help;
 }
 
 /* ----- Content ----- */
@@ -1482,9 +1632,9 @@ pre.highlighted-code {
 
 .tools-reference-content {
   margin-top: 12px;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .tool-ref-item {
@@ -1505,6 +1655,66 @@ pre.highlighted-code {
   font-size: 0.82rem;
   color: var(--text-muted);
   line-height: 1.4;
+}
+
+/* Individual tool detail collapsible sections */
+.tool-ref-item-details {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tool-ref-item-details > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  user-select: none;
+  list-style: none;
+}
+
+.tool-ref-item-details > summary::-webkit-details-marker { display: none; }
+.tool-ref-item-details > summary::before {
+  content: '\25B6  ';
+  font-size: 0.6rem;
+  vertical-align: 1px;
+  color: var(--text-muted);
+}
+.tool-ref-item-details[open] > summary::before {
+  content: '\25BC  ';
+}
+
+.tool-ref-short {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.tool-ref-full {
+  padding: 0 12px 12px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  border-top: 1px solid var(--border);
+}
+
+.tool-ref-full p { margin-bottom: 0.5em; }
+.tool-ref-full p:last-child { margin-bottom: 0; }
+.tool-ref-full ul, .tool-ref-full ol { margin: 0.3em 0 0.5em 1.5em; }
+.tool-ref-full li { margin-bottom: 0.2em; }
+.tool-ref-full code {
+  background: var(--inline-code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+.tool-ref-full pre {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--code-border);
+  overflow-x: auto;
+  margin: 0.5em 0;
+  font-size: 0.82rem;
 }
 
 /* ----- Tool calls ----- */
@@ -1772,10 +1982,8 @@ fn discover_session_files(path: &Path) -> Vec<PathBuf> {
     if path.is_dir() {
         // Recursively find .json files
         let pattern = format!("{}/**/*.json", path.display());
-        for entry in glob::glob(&pattern).expect("Failed to read glob pattern") {
-            if let Ok(p) = entry {
-                files.push(p);
-            }
+        for p in glob::glob(&pattern).expect("Failed to read glob pattern").flatten() {
+            files.push(p);
         }
     }
     files.sort();
@@ -2219,6 +2427,7 @@ mod tests {
                     role: "user".to_string(),
                     content: MessageContent::Text("Hello".to_string()),
                     tool_calls: None,
+                    usage: None,
                 },
                 context_items: vec![],
                 prompt_logs: None,
@@ -2344,6 +2553,7 @@ mod tests {
                         role: "system".to_string(),
                         content: MessageContent::Text("You are a helpful assistant.".to_string()),
                         tool_calls: None,
+                        usage: None,
                     },
                     context_items: vec![],
                     prompt_logs: None,
@@ -2353,6 +2563,7 @@ mod tests {
                         role: "user".to_string(),
                         content: MessageContent::Text("Hello".to_string()),
                         tool_calls: None,
+                        usage: None,
                     },
                     context_items: vec![],
                     prompt_logs: None,
@@ -2396,6 +2607,7 @@ mod tests {
                             id: Some("c1".to_string()),
                             call_type: Some("function".to_string()),
                         }]),
+                        usage: None,
                     },
                     context_items: vec![],
                     prompt_logs: None,
@@ -2405,6 +2617,7 @@ mod tests {
                         role: "tool".to_string(),
                         content: MessageContent::Text("file1.txt\nfile2.txt".to_string()),
                         tool_calls: None,
+                        usage: None,
                     },
                     context_items: vec![],
                     prompt_logs: None,
@@ -2435,12 +2648,13 @@ mod tests {
                 role: "thinking".to_string(),
                 content: MessageContent::Text("I should check the tests.".to_string()),
                 tool_calls: None,
+                usage: None,
             },
             context_items: vec![],
             prompt_logs: None,
         };
 
-        let html = render_message(&item);
+        let html = render_message(&item, None);
         // Should be <details class="thinking-details"> WITHOUT the "open" attribute
         assert!(html.contains("<details class=\"thinking-details\">"));
         assert!(!html.contains("<details open"));
@@ -2455,9 +2669,9 @@ mod tests {
         let system = "## Tools\n\n### Bash\nExecute a shell command and return its output.\n\n### Read\nRead the contents of a file from the local filesystem.\n\n### Edit\nPerform exact string replacements in files.\n";
         let descs = extract_tool_descriptions(system);
         assert!(descs.len() >= 3);
-        assert!(descs.iter().any(|(name, _)| name == "Bash"));
-        assert!(descs.iter().any(|(name, _)| name == "Read"));
-        assert!(descs.iter().any(|(name, _)| name == "Edit"));
+        assert!(descs.iter().any(|(name, _, _)| name == "Bash"));
+        assert!(descs.iter().any(|(name, _, _)| name == "Read"));
+        assert!(descs.iter().any(|(name, _, _)| name == "Edit"));
     }
 
     #[test]
@@ -2485,6 +2699,7 @@ mod tests {
                             call_type: None,
                         },
                     ]),
+                    usage: None,
                 },
                 context_items: vec![],
                 prompt_logs: None,
@@ -2501,6 +2716,7 @@ mod tests {
                         id: None,
                         call_type: None,
                     }]),
+                    usage: None,
                 },
                 context_items: vec![],
                 prompt_logs: None,
@@ -2534,5 +2750,118 @@ mod tests {
         assert!(html.contains("tool-call-header"));
         // Bare Bash rendering
         assert!(html.contains("tool-prompt"));
+        // Tool details should have collapsible sections
+        assert!(html.contains("tool-ref-item-details"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Token usage display tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_token_usage_displayed() {
+        let session = Session {
+            session_id: "tokens-test".to_string(),
+            title: "Token Test".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "user".to_string(),
+                        content: MessageContent::Text("Hello".to_string()),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                },
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "assistant".to_string(),
+                        content: MessageContent::Text("Hi!".to_string()),
+                        tool_calls: None,
+                        usage: Some(Usage {
+                            prompt_tokens: 100,
+                            completion_tokens: 50,
+                            completion_tokens_details: None,
+                        }),
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // Token badge should appear
+        assert!(html.contains("token-badge"));
+        assert!(html.contains("150 tokens"));
+        // Running total should appear
+        assert!(html.contains("token-running"));
+        assert!(html.contains("cumul."));
+        // Session header should show total tokens
+        assert!(html.contains("Tokens:"));
+    }
+
+    #[test]
+    fn test_no_token_display_when_no_usage() {
+        let session = Session {
+            session_id: "no-tokens".to_string(),
+            title: "No Tokens".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![ChatHistoryItem {
+                message: ChatMessage {
+                    role: "user".to_string(),
+                    content: MessageContent::Text("Hello".to_string()),
+                    tool_calls: None,
+                    usage: None,
+                },
+                context_items: vec![],
+                prompt_logs: None,
+            }],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // No token badges when no usage data
+        // (token-badge appears in CSS, so check for actual badge markup)
+        assert!(!html.contains("class=\"token-badge\""));
+        // Session header should not show total tokens line
+        assert!(!html.contains("Tokens: "));
+    }
+
+    #[test]
+    fn test_format_tokens() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1000), "1,000");
+        assert_eq!(format_tokens(1234), "1,234");
+        assert_eq!(format_tokens(9999), "9,999");
+        assert_eq!(format_tokens(10000), "10.0k");
+        assert_eq!(format_tokens(123456), "123.5k");
+        assert_eq!(format_tokens(1000000), "1.0M");
+    }
+
+    // -----------------------------------------------------------------------
+    // Full tool descriptions extraction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_tool_descriptions_full_content() {
+        let system = "## Tools\n\n### Bash\nExecute a shell command.\n\nParameters:\n- `command` (string, required): The command\n- `timeout` (number, optional): Timeout in ms\n\n### Read\nRead a file.\n\nParameters:\n- `file_path` (string, required): Path\n";
+        let descs = extract_tool_descriptions(system);
+        assert_eq!(descs.len(), 2);
+
+        let (name, _short, full) = &descs[0];
+        assert_eq!(name, "Bash");
+        // Full content should include parameters
+        assert!(full.contains("Parameters:"));
+        assert!(full.contains("`command`"));
+        assert!(full.contains("`timeout`"));
+
+        let (name2, _short2, full2) = &descs[1];
+        assert_eq!(name2, "Read");
+        assert!(full2.contains("`file_path`"));
     }
 }
