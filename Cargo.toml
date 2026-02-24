@@ -1,6 +1,6 @@
 [package]
 name = "continue-transcripts"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Convert continue.dev session files to readable HTML transcripts"
 license = "MIT"

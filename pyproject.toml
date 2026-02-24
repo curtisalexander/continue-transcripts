@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "continue-transcripts"
-version = "0.7.0"
+version = "0.8.0"
 description = "Convert continue.dev session files to readable HTML transcripts"
 readme = "README.md"
 license = { text = "MIT" }

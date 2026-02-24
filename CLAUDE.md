@@ -34,7 +34,7 @@ cargo build --release
 # Or install as a Python tool via uv (recommended for end users)
 uv tool install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.7.0
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.8.0
 ```
 
 ### Running tests
