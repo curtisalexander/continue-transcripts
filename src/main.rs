@@ -1017,13 +1017,9 @@ fn render_tool_result_inline(
             html.push_str(&ansi_to_html(&content_text));
             html.push_str("</code></pre>\n");
         } else {
-            // For Read/read_file results, try to syntax-highlight based on
-            // the file extension from the tool arguments.
-            let highlighted = if tool_name == "Read" || tool_name == "read_file" {
-                try_highlight_read_result(tool_args, &content_text)
-            } else {
-                None
-            };
+            // Try to syntax-highlight based on the file extension from
+            // the tool arguments (works for any tool with a file path arg).
+            let highlighted = try_highlight_tool_result(tool_args, &content_text);
             if let Some(hl) = highlighted {
                 html.push_str("        ");
                 html.push_str(&hl);
@@ -1041,15 +1037,15 @@ fn render_tool_result_inline(
     html
 }
 
-/// Attempt to syntax-highlight the content of a Read tool result.
-/// Extracts the file path from the JSON arguments, strips line-number prefixes
-/// (e.g. "     1\t..."), and applies syntax highlighting based on file extension.
-fn try_highlight_read_result(tool_args: &str, content: &str) -> Option<String> {
+/// Attempt to syntax-highlight the content of a tool result.
+/// Extracts a file path from the JSON arguments (checking common key names),
+/// strips line-number prefixes (e.g. "     1\t..."), and applies syntax
+/// highlighting based on the file extension.
+fn try_highlight_tool_result(tool_args: &str, content: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(tool_args).ok()?;
-    let file_path = parsed
-        .get("file_path")
-        .or_else(|| parsed.get("filepath"))
-        .and_then(|v| v.as_str())?;
+    let file_path = ["file_path", "filepath", "notebook_path", "path", "file"]
+        .iter()
+        .find_map(|key| parsed.get(*key).and_then(|v| v.as_str()))?;
     let lang = lang_from_filename(file_path);
     if lang.is_empty() {
         return None;
@@ -3856,21 +3852,32 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_try_highlight_read_result() {
+    fn test_try_highlight_tool_result() {
         let args = r#"{"file_path": "/home/user/test.rs"}"#;
         let content = "     1\tfn main() {\n     2\t    println!(\"hello\");\n     3\t}";
-        let result = try_highlight_read_result(args, content);
+        let result = try_highlight_tool_result(args, content);
         assert!(result.is_some());
         let hl = result.unwrap();
         assert!(hl.contains("highlighted-code"));
     }
 
     #[test]
-    fn test_try_highlight_read_result_no_extension() {
+    fn test_try_highlight_tool_result_no_extension() {
         let args = r#"{"file_path": "/home/user/README"}"#;
         let content = "just some text";
-        let result = try_highlight_read_result(args, content);
+        let result = try_highlight_tool_result(args, content);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_highlight_tool_result_path_key() {
+        // Grep-style tool with "path" key pointing to a Python file
+        let args = r#"{"pattern": "import", "path": "/home/user/app.py"}"#;
+        let content = "import os\nimport sys";
+        let result = try_highlight_tool_result(args, content);
+        assert!(result.is_some());
+        let hl = result.unwrap();
+        assert!(hl.contains("highlighted-code"));
     }
 
     // -----------------------------------------------------------------------
