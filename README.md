@@ -7,12 +7,58 @@ Convert [continue.dev](https://continue.dev) session files to readable, self-con
 ## Features
 
 - Converts continue.dev session JSON files into styled, self-contained HTML pages
-- Renders assistant messages as Markdown (code blocks, tables, task lists, etc.)
+- Renders assistant messages as Markdown (code blocks, tables, task lists, etc.) with syntax highlighting
+- **ANSI → HTML** — terminal output with color codes is rendered as styled HTML (One Dark palette)
+- **Human-readable tool calls** — `$ command` for Bash, `key: value` for file paths, structured display for multi-arg tools (no raw JSON dumps)
+- **Tool calls nested under assistant messages** — tool calls and their results appear indented under the assistant message that invoked them
+- **Collapsible thinking & tool results** — thinking blocks and tool results start collapsed; expand on click
+- **System prompt at top** — the first system message is extracted and displayed in a collapsible section above the transcript
+- **Tools reference panel** — all tools used in the session are listed with descriptions (parsed from the system prompt)
 - Displays context items (attached files/code) in collapsible sections
-- Shows tool calls with pretty-printed JSON arguments
 - Generates an `index.html` linking all processed sessions when given a directory
 - Optional title-based filtering with `--filter`
+- **Parallel processing** with configurable worker count (`--workers`)
+- **Terminal summary** — file counts, elapsed time, and per-file status indicators
+- **Filename deduplication** — output filenames are truncated to 60 characters with automatic `_1`, `_2` suffixes on collision
 - Responsive design — works on desktop and mobile
+
+## Quick start
+
+```sh
+# Build from source (requires Rust toolchain)
+cargo build --release
+
+# Convert a single session file
+./target/release/continue-transcripts session.json
+
+# Convert all sessions in a directory
+./target/release/continue-transcripts ~/.continue/sessions/ -o ./transcripts
+
+# Filter by title and use 4 workers
+./target/release/continue-transcripts ~/.continue/sessions/ --filter "auth" -w 4 -o ./transcripts
+```
+
+Output looks like:
+
+```
+Using 4 worker thread(s)
+Discovered 12 JSON file(s)
+  ✅ transcripts/Fix_failing_tests_in_auth_module.html
+  ✅ transcripts/Refactor_auth_module.html
+  ...
+  ✅ transcripts/index.html
+
+═══════════════════════════════════════════
+  Summary
+═══════════════════════════════════════════
+  Files discovered:  12
+  Sessions written:  10 (+ 1 index)
+  Skipped:           2
+  Workers:           4
+  Elapsed:           1.23s
+───────────────────────────────────────────
+  ✅ All files processed successfully!
+```
 
 ## Installation
 
@@ -78,6 +124,12 @@ If you prefer to build from source (or need a platform not covered by the pre-bu
 uv tool install git+https://github.com/curtisalexander/continue-transcripts
 ```
 
+Or build with Cargo directly:
+
+```sh
+cargo build --release
+```
+
 ### Pre-built wheel platforms
 
 Wheels are built in CI for the following targets:
@@ -92,7 +144,7 @@ Wheels are built in CI for the following targets:
 ## Usage
 
 ```
-continue-transcripts <INPUT> [OPTIONS]
+continue-transcripts [OPTIONS] <INPUT>
 ```
 
 ### Arguments
@@ -107,6 +159,7 @@ continue-transcripts <INPUT> [OPTIONS]
 |--------|-------------|
 | `-o`, `--output <DIR>` | Output directory for generated HTML (default: `output`) |
 | `--filter <STRING>` | Only process sessions whose title contains this string (case-insensitive) |
+| `-w`, `--workers <N>` | Number of parallel worker threads (defaults to number of CPU cores) |
 | `-h`, `--help` | Print help |
 
 ### Examples
@@ -129,6 +182,12 @@ Filter sessions by title:
 continue-transcripts ~/.continue/sessions/ --filter "auth" -o ./transcripts
 ```
 
+Use 8 worker threads for a large directory:
+
+```sh
+continue-transcripts ~/.continue/sessions/ -w 8 -o ./transcripts
+```
+
 The tool writes one HTML file per session to the output directory, plus an `index.html` that links to each transcript.
 
 ## Where are continue.dev sessions stored?
@@ -137,11 +196,18 @@ Continue stores data in `~/.continue/` on Linux and macOS (`%USERPROFILE%\.conti
 
 ## How it works
 
-1. Reads one or more continue.dev session JSON files
-2. Parses the chat history (user messages, assistant messages, tool calls, context items)
-3. Renders assistant/system messages from Markdown to HTML using [pulldown-cmark](https://crates.io/crates/pulldown-cmark)
+1. Discovers session JSON files from the input path (single file or recursive directory scan)
+2. Reads and parses files in parallel using [rayon](https://crates.io/crates/rayon) (configurable thread count)
+3. For each session:
+   - Extracts the system prompt (first `system` message) to a collapsible top section
+   - Collects tool descriptions from the system prompt for a reference panel
+   - Groups assistant messages with their tool calls and tool results
+   - Converts ANSI escape codes in tool output to styled HTML
+   - Renders Markdown to HTML with syntax highlighting via [pulldown-cmark](https://crates.io/crates/pulldown-cmark) + [syntect](https://crates.io/crates/syntect)
 4. Produces a self-contained HTML file per session (all CSS and JavaScript are embedded — no external dependencies)
-5. Generates an `index.html` listing all sessions when processing multiple files
+5. Deduplicates output filenames (truncated to 60 chars, with `_1`, `_2` suffixes on collision)
+6. Generates an `index.html` listing all sessions when processing multiple files
+7. Prints a summary with file counts, timing, and status indicators
 
 ## Inspiration
 
