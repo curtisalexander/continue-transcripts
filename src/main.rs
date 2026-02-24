@@ -648,6 +648,43 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
         }
     }
 
+    // Edit tool — render file path + diff-style old/new
+    if name == "Edit" || name == "edit" {
+        let file_path = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        let old_str = obj.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+        let new_str = obj.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+        if !file_path.is_empty() && (!old_str.is_empty() || !new_str.is_empty()) {
+            let mut html = String::new();
+            html.push_str("<div class=\"tool-args-kv-group\">");
+            html.push_str(&format!(
+                "<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">file_path</span>: <code>{}</code></div>",
+                encode_text(file_path)
+            ));
+            // Show replace_all flag if present and true
+            if let Some(replace_all) = obj.get("replace_all").and_then(|v| v.as_bool()) {
+                if replace_all {
+                    html.push_str("<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">replace_all</span>: <code>true</code></div>");
+                }
+            }
+            html.push_str("<pre class=\"tool-diff\"><code>");
+            for line in old_str.lines() {
+                html.push_str(&format!(
+                    "<span class=\"diff-remove\">- {}</span>\n",
+                    encode_text(line)
+                ));
+            }
+            for line in new_str.lines() {
+                html.push_str(&format!(
+                    "<span class=\"diff-add\">+ {}</span>\n",
+                    encode_text(line)
+                ));
+            }
+            html.push_str("</code></pre>");
+            html.push_str("</div>");
+            return html;
+        }
+    }
+
     // Multiple keys — render as key: value pairs
     let all_simple = obj.values().all(|v| v.is_string() || v.is_number() || v.is_boolean());
     if all_simple && obj.len() <= 8 {
@@ -712,6 +749,25 @@ fn render_tool_calls(tool_calls: &[ToolCallDelta]) -> String {
     html
 }
 
+/// Extract a language token from a filename or path for syntax highlighting.
+/// Returns the file extension (without dot) which can be fed to `highlight_code`.
+fn lang_from_filename(name: &str) -> &str {
+    // Take the portion after the last '/' or '\'
+    let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    // Special filenames
+    match basename {
+        "Dockerfile" | "dockerfile" => return "Dockerfile",
+        "Makefile" | "makefile" | "GNUmakefile" => return "makefile",
+        _ => {}
+    }
+    // Extract extension
+    if let Some(ext_pos) = basename.rfind('.') {
+        &basename[ext_pos + 1..]
+    } else {
+        ""
+    }
+}
+
 fn render_context_items(items: &[ContextItem]) -> String {
     if items.is_empty() {
         return String::new();
@@ -735,9 +791,35 @@ fn render_context_items(items: &[ContextItem]) -> String {
             ));
         }
         if !item.content.is_empty() {
-            html.push_str("<pre class=\"context-content\"><code>");
-            html.push_str(&encode_text(&item.content));
-            html.push_str("</code></pre>");
+            let lang = lang_from_filename(&item.name);
+            if !lang.is_empty() {
+                if let Some(highlighted) = highlight_code(lang, &item.content) {
+                    // Strip syntect's inline background style, use our CSS class
+                    let patched = if let Some(start) = highlighted.find("style=\"") {
+                        let after_style = start + 7;
+                        if let Some(end_quote) = highlighted[after_style..].find('"') {
+                            format!(
+                                "{}class=\"highlighted-code context-content\"{}",
+                                &highlighted[..start],
+                                &highlighted[after_style + end_quote + 1..]
+                            )
+                        } else {
+                            highlighted
+                        }
+                    } else {
+                        highlighted
+                    };
+                    html.push_str(&patched);
+                } else {
+                    html.push_str("<pre class=\"context-content\"><code>");
+                    html.push_str(&encode_text(&item.content));
+                    html.push_str("</code></pre>");
+                }
+            } else {
+                html.push_str("<pre class=\"context-content\"><code>");
+                html.push_str(&encode_text(&item.content));
+                html.push_str("</code></pre>");
+            }
         }
         html.push_str("</div>");
     }
@@ -767,16 +849,52 @@ fn format_tokens(n: u64) -> String {
     }
 }
 
+/// Extract model title from a ChatHistoryItem's promptLogs.
+fn item_model(item: &ChatHistoryItem) -> Option<&str> {
+    item.prompt_logs.as_ref().and_then(|logs| {
+        logs.iter().find_map(|log| {
+            if !log.model_title.is_empty() {
+                Some(log.model_title.as_str())
+            } else {
+                log.completion_options
+                    .as_ref()
+                    .filter(|opts| !opts.model.is_empty())
+                    .map(|opts| opts.model.as_str())
+            }
+        })
+    })
+}
+
 /// Render a single message (user, assistant, system, thinking).
 /// Tool-result messages are rendered separately via `render_tool_result_inline`.
 /// `running_tokens` is the cumulative token total up to and including this message.
-fn render_message(item: &ChatHistoryItem, running_tokens: Option<(u64, u64)>) -> String {
+/// `model_name` is the model used for this turn (shown on assistant messages).
+fn render_message(
+    item: &ChatHistoryItem,
+    running_tokens: Option<(u64, u64)>,
+    model_name: Option<&str>,
+) -> String {
     let msg = &item.message;
     let role = msg.role.as_str();
     let cls = role_class(role);
     let label = role_label(role);
     let content_text = msg.content.text();
     let is_thinking = role == "thinking";
+
+    // Build model badge for assistant messages
+    let model_badge = if role == "assistant" {
+        model_name
+            .filter(|m| !m.is_empty())
+            .map(|m| {
+                format!(
+                    " <span class=\"model-badge\" title=\"Model\">{}</span>",
+                    encode_text(m)
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     // Build token badge HTML
     let token_badge = if let Some(usage) = &msg.usage {
@@ -809,30 +927,22 @@ fn render_message(item: &ChatHistoryItem, running_tokens: Option<(u64, u64)>) ->
         // Thinking sections are collapsible (default **collapsed**)
         html.push_str("  <details class=\"thinking-details\">\n");
         html.push_str(&format!(
-            "    <summary class=\"message-header\"><span class=\"role-label\">{label}</span>{token_badge}</summary>\n"
+            "    <summary class=\"message-header\"><span class=\"role-label\">{label}</span>{model_badge}{token_badge}</summary>\n"
         ));
     } else {
         html.push_str(&format!(
-            "  <div class=\"message-header\"><span class=\"role-label\">{label}</span>{token_badge}</div>\n"
+            "  <div class=\"message-header\"><span class=\"role-label\">{label}</span>{model_badge}{token_badge}</div>\n"
         ));
     }
 
     // Context items (collapsed by default)
     html.push_str(&render_context_items(&item.context_items));
 
-    // Main content
+    // Main content — render all roles as markdown (users write code blocks,
+    // lists, and formatting too)
     if !msg.content.is_empty() {
         html.push_str("  <div class=\"message-content\">\n");
-        if role == "user" {
-            // For user messages render as plain text (they are usually short prompts)
-            html.push_str(&format!(
-                "    <p>{}</p>\n",
-                encode_text(&content_text)
-            ));
-        } else {
-            // For assistant / system / thinking — render markdown
-            html.push_str(&format!("    {}\n", markdown_to_html(&content_text)));
-        }
+        html.push_str(&format!("    {}\n", markdown_to_html(&content_text)));
         html.push_str("  </div>\n");
     }
 
@@ -856,7 +966,13 @@ fn render_message(item: &ChatHistoryItem, running_tokens: Option<(u64, u64)>) ->
 
 /// Render a tool result message as a collapsible `<details>` block.
 /// `tool_name` is the name of the tool call this result responds to (if known).
-fn render_tool_result_inline(item: &ChatHistoryItem, tool_name: &str) -> String {
+/// `tool_args` is the JSON arguments string from the corresponding tool call,
+/// used to infer file extensions for syntax highlighting.
+fn render_tool_result_inline(
+    item: &ChatHistoryItem,
+    tool_name: &str,
+    tool_args: &str,
+) -> String {
     let content_text = item.message.content.text();
     let label = if tool_name.is_empty() {
         "Tool Result".to_string()
@@ -880,15 +996,80 @@ fn render_tool_result_inline(item: &ChatHistoryItem, tool_name: &str) -> String 
             html.push_str(&ansi_to_html(&content_text));
             html.push_str("</code></pre>\n");
         } else {
-            html.push_str("        <pre class=\"tool-result-pre\"><code>");
-            html.push_str(&encode_text(&content_text));
-            html.push_str("</code></pre>\n");
+            // For Read/read_file results, try to syntax-highlight based on
+            // the file extension from the tool arguments.
+            let highlighted = if tool_name == "Read" || tool_name == "read_file" {
+                try_highlight_read_result(tool_args, &content_text)
+            } else {
+                None
+            };
+            if let Some(hl) = highlighted {
+                html.push_str("        ");
+                html.push_str(&hl);
+                html.push_str("\n");
+            } else {
+                html.push_str("        <pre class=\"tool-result-pre\"><code>");
+                html.push_str(&encode_text(&content_text));
+                html.push_str("</code></pre>\n");
+            }
         }
     }
 
     html.push_str("      </div>\n");
     html.push_str("    </details>\n");
     html
+}
+
+/// Attempt to syntax-highlight the content of a Read tool result.
+/// Extracts the file path from the JSON arguments, strips line-number prefixes
+/// (e.g. "     1\t..."), and applies syntax highlighting based on file extension.
+fn try_highlight_read_result(tool_args: &str, content: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(tool_args).ok()?;
+    let file_path = parsed
+        .get("file_path")
+        .or_else(|| parsed.get("filepath"))
+        .and_then(|v| v.as_str())?;
+    let lang = lang_from_filename(file_path);
+    if lang.is_empty() {
+        return None;
+    }
+
+    // Strip line-number prefixes that continue.dev's Read tool adds
+    // (pattern: optional spaces + digits + tab)
+    let stripped: String = content
+        .lines()
+        .map(|line| {
+            // Match "  123\t..." style line-number prefixes
+            if let Some(tab_pos) = line.find('\t') {
+                let prefix = &line[..tab_pos];
+                if prefix.trim().chars().all(|c| c.is_ascii_digit()) {
+                    return &line[tab_pos + 1..];
+                }
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let highlighted = highlight_code(lang, &stripped)?;
+
+    // Patch syntect's inline style to use our CSS class
+    let patched = if let Some(start) = highlighted.find("style=\"") {
+        let after_style = start + 7;
+        if let Some(end_quote) = highlighted[after_style..].find('"') {
+            format!(
+                "{}class=\"highlighted-code tool-result-pre\"{}",
+                &highlighted[..start],
+                &highlighted[after_style + end_quote + 1..]
+            )
+        } else {
+            highlighted
+        }
+    } else {
+        highlighted
+    };
+
+    Some(patched)
 }
 
 /// Extract tool descriptions from a system prompt.
@@ -1325,6 +1506,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let mut assistant_count = 0u32;
     let mut running_prompt_tokens: u64 = 0;
     let mut running_completion_tokens: u64 = 0;
+    let mut last_model: Option<String> = None; // tracks latest model from promptLogs
     let history = &session.history;
     let len = history.len();
     let mut i = 0;
@@ -1337,6 +1519,11 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         if Some(i) == system_prompt_idx {
             i += 1;
             continue;
+        }
+
+        // Track the latest model from promptLogs on any item
+        if let Some(m) = item_model(item) {
+            last_model = Some(m.to_string());
         }
 
         // Update running token totals if this message has usage data
@@ -1353,12 +1540,13 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         match role {
             "user" => {
                 user_count += 1;
-                messages_html.push_str(&render_message(item, running));
+                messages_html.push_str(&render_message(item, running, None));
                 i += 1;
             }
             "assistant" => {
                 assistant_count += 1;
-                let mut msg_html = render_message(item, running);
+                let mut msg_html =
+                    render_message(item, running, last_model.as_deref());
 
                 // Count how many tool calls this assistant message has
                 let call_count = item
@@ -1368,14 +1556,18 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
                     .map_or(0, |c| c.len());
 
                 if call_count > 0 {
-                    // Collect the tool call names for matching with results
-                    let call_names: Vec<String> = item
+                    // Collect tool call names and args for matching with results
+                    let call_info: Vec<(String, String)> = item
                         .message
                         .tool_calls
                         .as_ref()
                         .unwrap()
                         .iter()
-                        .filter_map(|tc| tc.function.as_ref().map(|f| f.name.clone()))
+                        .filter_map(|tc| {
+                            tc.function
+                                .as_ref()
+                                .map(|f| (f.name.clone(), f.arguments.clone()))
+                        })
                         .collect();
 
                     // Look ahead for consecutive tool-result messages
@@ -1383,13 +1575,19 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
                     let mut result_idx = 0;
                     let mut j = i + 1;
                     while j < len && history[j].message.role == "tool" {
-                        let tool_name = if result_idx < call_names.len() {
-                            &call_names[result_idx]
+                        let (tool_name, tool_args) = if result_idx < call_info.len() {
+                            (
+                                call_info[result_idx].0.as_str(),
+                                call_info[result_idx].1.as_str(),
+                            )
                         } else {
-                            ""
+                            ("", "")
                         };
-                        tool_results_html
-                            .push_str(&render_tool_result_inline(&history[j], tool_name));
+                        tool_results_html.push_str(&render_tool_result_inline(
+                            &history[j],
+                            tool_name,
+                            tool_args,
+                        ));
                         result_idx += 1;
                         j += 1;
                     }
@@ -1422,7 +1620,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
                 messages_html.push_str(&msg_html);
             }
             "thinking" => {
-                messages_html.push_str(&render_message(item, running));
+                messages_html.push_str(&render_message(item, running, None));
                 i += 1;
             }
             "tool" => {
@@ -1430,14 +1628,14 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
                 // Render standalone with collapsible wrapper
                 let mut html = String::new();
                 html.push_str("<div class=\"message tool-result\">\n");
-                html.push_str(&render_tool_result_inline(item, ""));
+                html.push_str(&render_tool_result_inline(item, "", ""));
                 html.push_str("</div>\n");
                 messages_html.push_str(&html);
                 i += 1;
             }
             _ => {
                 // system (non-first) or other roles — render normally
-                messages_html.push_str(&render_message(item, running));
+                messages_html.push_str(&render_message(item, running, None));
                 i += 1;
             }
         }
@@ -1566,6 +1764,11 @@ const CSS: &str = r#"<style>
 
   --inline-code-bg: #f1f5f9;
   --inline-code-text: #0f172a;
+
+  --diff-add-bg: #1a2e1a;
+  --diff-add-text: #7ee787;
+  --diff-remove-bg: #2e1a1a;
+  --diff-remove-text: #f47067;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1679,6 +1882,20 @@ body {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+/* ----- Model badge ----- */
+.model-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: rgba(0,0,0,0.05);
+  padding: 1px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
+  vertical-align: middle;
+  font-style: italic;
 }
 
 /* ----- Token badges ----- */
@@ -2063,6 +2280,34 @@ pre.highlighted-code {
   font-size: 0.85em;
 }
 
+/* ----- Diff rendering for Edit tool calls ----- */
+.tool-diff {
+  background: var(--code-bg) !important;
+  color: var(--code-text) !important;
+  padding: 10px 14px !important;
+  border-radius: 6px;
+  font-size: 0.82rem !important;
+  max-height: 400px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.diff-remove {
+  display: block;
+  color: var(--diff-remove-text);
+  background: var(--diff-remove-bg);
+  padding: 0 4px;
+  margin: 0 -4px;
+}
+
+.diff-add {
+  display: block;
+  color: var(--diff-add-text);
+  background: var(--diff-add-bg);
+  padding: 0 4px;
+  margin: 0 -4px;
+}
+
 /* ----- Assistant tool group (nesting) ----- */
 .assistant-tool-group {
   margin-top: 12px;
@@ -2155,7 +2400,7 @@ pre.highlighted-code {
   padding: 8px 12px !important;
   border-radius: 6px;
   font-size: 0.8rem !important;
-  max-height: 200px;
+  max-height: 500px;
   overflow-y: auto;
 }
 
@@ -2824,20 +3069,136 @@ mod tests {
     }
 
     #[test]
-    fn test_render_tool_args_edit_multikey() {
+    fn test_render_tool_args_edit_diff_style() {
         let result = render_tool_args(
             "Edit",
             r#"{"file_path": "test.rs", "old_string": "foo", "new_string": "bar"}"#,
         );
+        // Edit renders as a diff with file_path and old/new lines
         assert!(result.contains("file_path"));
-        assert!(result.contains("old_string"));
-        assert!(result.contains("new_string"));
+        assert!(result.contains("test.rs"));
+        assert!(result.contains("diff-remove"));
+        assert!(result.contains("diff-add"));
+        assert!(result.contains("- foo"));
+        assert!(result.contains("+ bar"));
+    }
+
+    #[test]
+    fn test_render_tool_args_edit_multiline_diff() {
+        let result = render_tool_args(
+            "Edit",
+            r#"{"file_path": "app.ts", "old_string": "line1\nline2", "new_string": "new1\nnew2\nnew3"}"#,
+        );
+        assert!(result.contains("tool-diff"));
+        assert!(result.contains("- line1"));
+        assert!(result.contains("- line2"));
+        assert!(result.contains("+ new1"));
+        assert!(result.contains("+ new2"));
+        assert!(result.contains("+ new3"));
     }
 
     #[test]
     fn test_render_tool_args_invalid_json() {
         let result = render_tool_args("Unknown", "not json at all");
         assert!(result.contains("not json at all"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Language detection from filenames
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lang_from_filename() {
+        assert_eq!(lang_from_filename("src/auth/middleware.ts"), "ts");
+        assert_eq!(lang_from_filename("main.rs"), "rs");
+        assert_eq!(lang_from_filename("/home/user/project/app.py"), "py");
+        assert_eq!(lang_from_filename("Dockerfile"), "Dockerfile");
+        assert_eq!(lang_from_filename("Makefile"), "makefile");
+        assert_eq!(lang_from_filename("no-extension"), "");
+    }
+
+    #[test]
+    fn test_lang_from_filename_windows_path() {
+        assert_eq!(lang_from_filename("C:\\Users\\test\\file.tsx"), "tsx");
+    }
+
+    // -----------------------------------------------------------------------
+    // Context item syntax highlighting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_context_items_syntax_highlighted() {
+        let items = vec![ContextItem {
+            name: "src/app.ts".to_string(),
+            description: "Main app".to_string(),
+            content: "const x: number = 42;".to_string(),
+        }];
+        let html = render_context_items(&items);
+        // Should use highlighted-code class for TypeScript
+        assert!(html.contains("highlighted-code") || html.contains("context-content"));
+        assert!(html.contains("src/app.ts"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Read result syntax highlighting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_try_highlight_read_result() {
+        let args = r#"{"file_path": "/home/user/test.rs"}"#;
+        let content = "     1\tfn main() {\n     2\t    println!(\"hello\");\n     3\t}";
+        let result = try_highlight_read_result(args, content);
+        assert!(result.is_some());
+        let hl = result.unwrap();
+        assert!(hl.contains("highlighted-code"));
+    }
+
+    #[test]
+    fn test_try_highlight_read_result_no_extension() {
+        let args = r#"{"file_path": "/home/user/README"}"#;
+        let content = "just some text";
+        let result = try_highlight_read_result(args, content);
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Model badge
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_model_badge_on_assistant() {
+        let item = ChatHistoryItem {
+            message: ChatMessage {
+                role: "assistant".to_string(),
+                content: MessageContent::Text("Hello".to_string()),
+                tool_calls: None,
+                usage: None,
+            },
+            context_items: vec![],
+            prompt_logs: None,
+            tool_call_states: None,
+        };
+        let html = render_message(&item, None, Some("Claude 3.5 Sonnet"));
+        assert!(html.contains("model-badge"));
+        assert!(html.contains("Claude 3.5 Sonnet"));
+    }
+
+    #[test]
+    fn test_no_model_badge_on_user() {
+        let item = ChatHistoryItem {
+            message: ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text("Hello".to_string()),
+                tool_calls: None,
+                usage: None,
+            },
+            context_items: vec![],
+            prompt_logs: None,
+            tool_call_states: None,
+        };
+        let html = render_message(&item, None, Some("Claude 3.5 Sonnet"));
+        // Model badge should not appear on user messages
+        assert!(!html.contains("model-badge"));
     }
 
     // -----------------------------------------------------------------------
@@ -2960,7 +3321,7 @@ mod tests {
             tool_call_states: None,
         };
 
-        let html = render_message(&item, None);
+        let html = render_message(&item, None, None);
         // Should be <details class="thinking-details"> WITHOUT the "open" attribute
         assert!(html.contains("<details class=\"thinking-details\">"));
         assert!(!html.contains("<details open"));
