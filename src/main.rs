@@ -74,15 +74,8 @@ struct PromptLog {
     model_title: String,
     #[serde(default)]
     completion_options: Option<CompletionOptions>,
-    /// The full system prompt text sent to the model.
     #[serde(default)]
     prompt: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    completion: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    model_provider: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -101,14 +94,8 @@ struct CompletionOptions {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ToolCallState {
-    #[allow(dead_code)]
-    #[serde(default)]
-    tool_call_id: String,
     #[serde(default)]
     tool: Option<ToolDef>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    status: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -117,15 +104,7 @@ struct ToolDef {
     #[serde(default)]
     function: Option<ToolFunction>,
     #[serde(default)]
-    display_title: String,
-    #[serde(default)]
     system_message_description: Option<SystemMessageDescription>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    group: String,
-    #[allow(dead_code)]
-    #[serde(default, rename = "type")]
-    tool_type: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -144,9 +123,6 @@ struct ToolFunction {
 struct SystemMessageDescription {
     #[serde(default)]
     prefix: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    example_args: Option<Vec<(String, serde_json::Value)>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -168,17 +144,6 @@ struct Usage {
     completion_tokens: u64,
     #[serde(default)]
     prompt_tokens: u64,
-    #[allow(dead_code)]
-    #[serde(default)]
-    completion_tokens_details: Option<CompletionTokensDetails>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct CompletionTokensDetails {
-    #[allow(dead_code)]
-    #[serde(default)]
-    reasoning_tokens: Option<u64>,
 }
 
 /// continue.dev `content` can be a plain string or an array of parts.
@@ -227,11 +192,7 @@ enum MessagePart {
     #[serde(alias = "text")]
     Text { text: String },
     #[serde(alias = "imageUrl", alias = "image_url")]
-    ImageUrl {
-        #[allow(dead_code)]
-        #[serde(default)]
-        url: Option<String>,
-    },
+    ImageUrl {},
     #[serde(other)]
     Unknown,
 }
@@ -241,12 +202,6 @@ enum MessagePart {
 struct ToolCallDelta {
     #[serde(default)]
     function: Option<ToolCallFunction>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    id: Option<String>,
-    #[allow(dead_code)]
-    #[serde(default, rename = "type")]
-    call_type: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -1007,77 +962,6 @@ fn collect_tool_names(history: &[ChatHistoryItem]) -> Vec<String> {
     names
 }
 
-/// Render the tools reference panel (legacy, text-parsed only).
-/// Each tool gets its own collapsible section with full details.
-#[allow(dead_code)]
-fn render_tools_reference(
-    tool_names: &[String],
-    tool_descriptions: &[(String, String, String)],
-) -> String {
-    if tool_names.is_empty() {
-        return String::new();
-    }
-
-    let mut html = String::new();
-    html.push_str("<details class=\"tools-reference\">\n");
-    html.push_str("  <summary>Tools Used (");
-    html.push_str(&tool_names.len().to_string());
-    html.push_str(")</summary>\n");
-    html.push_str("  <div class=\"tools-reference-content\">\n");
-
-    // Build lookups from description list
-    let short_map: std::collections::HashMap<&str, &str> = tool_descriptions
-        .iter()
-        .map(|(name, short, _)| (name.as_str(), short.as_str()))
-        .collect();
-    let full_map: std::collections::HashMap<&str, &str> = tool_descriptions
-        .iter()
-        .map(|(name, _, full)| (name.as_str(), full.as_str()))
-        .collect();
-
-    for name in tool_names {
-        let has_full = full_map.get(name.as_str()).is_some_and(|f| !f.is_empty());
-        if has_full {
-            html.push_str("    <details class=\"tool-ref-item-details\">\n");
-            html.push_str(&format!(
-                "      <summary class=\"tool-ref-item-summary\"><span class=\"tool-ref-name\">{}</span>",
-                encode_text(name)
-            ));
-            if let Some(short) = short_map.get(name.as_str()) {
-                html.push_str(&format!(
-                    " <span class=\"tool-ref-short\">&mdash; {}</span>",
-                    encode_text(short)
-                ));
-            }
-            html.push_str("</summary>\n");
-            html.push_str("      <div class=\"tool-ref-full\">\n");
-            if let Some(full) = full_map.get(name.as_str()) {
-                html.push_str(&format!("        {}\n", markdown_to_html(full)));
-            }
-            html.push_str("      </div>\n");
-            html.push_str("    </details>\n");
-        } else {
-            // No full description available — render as simple item
-            html.push_str("    <div class=\"tool-ref-item\">\n");
-            html.push_str(&format!(
-                "      <div class=\"tool-ref-name\">{}</div>\n",
-                encode_text(name)
-            ));
-            if let Some(short) = short_map.get(name.as_str()) {
-                html.push_str(&format!(
-                    "      <div class=\"tool-ref-desc\">{}</div>\n",
-                    encode_text(short)
-                ));
-            }
-            html.push_str("    </div>\n");
-        }
-    }
-
-    html.push_str("  </div>\n");
-    html.push_str("</details>\n");
-    html
-}
-
 fn file_modified_date(path: &Path) -> Option<String> {
     let meta = fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
@@ -1106,11 +990,27 @@ fn extract_model(session: &Session) -> Option<String> {
     None
 }
 
-/// Extract the system prompt from promptLogs (preferred) or fall back to
-/// the first system message in the history.
+/// Extract the system prompt from the session.
+///
+/// Prefer an explicit system-role message in the history — this is
+/// the cleanest, most direct representation of the system prompt.
+///
+/// Fall back to `promptLogs[].prompt` which contains the full
+/// text-formatted prompt sent to the model (all messages concatenated,
+/// not just the system portion).
 fn extract_system_prompt(session: &Session) -> (String, Option<usize>) {
-    // Prefer promptLogs[].prompt — this is where continue.dev stores the
-    // full system prompt that was actually sent to the model.
+    // Primary: first system message in history
+    for (idx, item) in session.history.iter().enumerate() {
+        if item.message.role == "system" {
+            let text = item.message.content.text();
+            if !text.is_empty() {
+                return (text, Some(idx));
+            }
+        }
+    }
+
+    // Fallback: promptLogs[].prompt — may contain the full conversation
+    // text, not just the system prompt, but is better than nothing.
     for item in &session.history {
         if let Some(logs) = &item.prompt_logs {
             for log in logs {
@@ -1121,24 +1021,12 @@ fn extract_system_prompt(session: &Session) -> (String, Option<usize>) {
         }
     }
 
-    // Fallback: first system message in history
-    for (idx, item) in session.history.iter().enumerate() {
-        if item.message.role == "system" {
-            let text = item.message.content.text();
-            if !text.is_empty() {
-                return (text, Some(idx));
-            }
-        }
-    }
-
     (String::new(), None)
 }
 
 /// Structured tool info extracted from toolCallStates or completionOptions.
 struct ExtractedTool {
     name: String,
-    #[allow(dead_code)]
-    display_title: String,
     description: String,
     system_message_prefix: String,
     parameters: Option<serde_json::Value>,
@@ -1159,7 +1047,7 @@ fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
                         if !func.name.is_empty() && seen.insert(func.name.clone()) {
                             tools.push(ExtractedTool {
                                 name: func.name.clone(),
-                                display_title: tool_def.display_title.clone(),
+
                                 description: func.description.clone(),
                                 system_message_prefix: tool_def
                                     .system_message_description
@@ -1185,7 +1073,7 @@ fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
                                 if !func.name.is_empty() && seen.insert(func.name.clone()) {
                                     tools.push(ExtractedTool {
                                         name: func.name.clone(),
-                                        display_title: tool_def.display_title.clone(),
+        
                                         description: func.description.clone(),
                                         system_message_prefix: tool_def
                                             .system_message_description
@@ -1397,7 +1285,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         &session.title
     };
 
-    // --- Extract system prompt (prefer promptLogs, fallback to system message) ---
+    // --- Extract system prompt (prefer system message, fallback to promptLogs) ---
     let (system_prompt_content, system_prompt_idx) = extract_system_prompt(session);
 
     let system_prompt_html = if !system_prompt_content.is_empty() {
@@ -3021,8 +2909,6 @@ mod tests {
                                 name: "Bash".to_string(),
                                 arguments: r#"{"command": "ls"}"#.to_string(),
                             }),
-                            id: Some("c1".to_string()),
-                            call_type: Some("function".to_string()),
                         }]),
                         usage: None,
                     },
@@ -3107,16 +2993,12 @@ mod tests {
                                 name: "Bash".to_string(),
                                 arguments: String::new(),
                             }),
-                            id: None,
-                            call_type: None,
                         },
                         ToolCallDelta {
                             function: Some(ToolCallFunction {
                                 name: "Read".to_string(),
                                 arguments: String::new(),
                             }),
-                            id: None,
-                            call_type: None,
                         },
                     ]),
                     usage: None,
@@ -3134,8 +3016,6 @@ mod tests {
                             name: "Bash".to_string(), // duplicate
                             arguments: String::new(),
                         }),
-                        id: None,
-                        call_type: None,
                     }]),
                     usage: None,
                 },
@@ -3206,7 +3086,6 @@ mod tests {
                         usage: Some(Usage {
                             prompt_tokens: 100,
                             completion_tokens: 50,
-                            completion_tokens_details: None,
                         }),
                     },
                     context_items: vec![],
@@ -3291,30 +3170,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // System prompt extraction from promptLogs
+    // System prompt extraction
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_system_prompt_from_prompt_logs() {
-        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
-            .expect("prompt-logs fixture should exist");
-        let session: Session = serde_json::from_str(&raw).expect("should parse");
-
-        let (prompt, idx) = extract_system_prompt(&session);
-        // Should extract from promptLogs[].prompt, not from a system message
-        assert!(!prompt.is_empty());
-        assert!(prompt.contains("expert software engineer"));
-        assert!(prompt.contains("investigate before making changes"));
-        // No system message index since it came from promptLogs
-        assert!(idx.is_none());
-    }
-
-    #[test]
-    fn test_system_prompt_fallback_to_system_message() {
-        // When there are no promptLogs with prompt, fall back to system message
+    fn test_system_prompt_prefers_system_message() {
+        // System messages in history are the primary source
         let session = Session {
-            session_id: "fallback-test".to_string(),
-            title: "Fallback Test".to_string(),
+            session_id: "sys-msg-test".to_string(),
+            title: "System Message Test".to_string(),
             workspace_directory: "/tmp".to_string(),
             history: vec![
                 ChatHistoryItem {
@@ -3345,7 +3209,22 @@ mod tests {
 
         let (prompt, idx) = extract_system_prompt(&session);
         assert_eq!(prompt, "You are a helpful assistant.");
-        assert_eq!(idx, Some(0)); // index of the system message
+        assert_eq!(idx, Some(0));
+    }
+
+    #[test]
+    fn test_system_prompt_falls_back_to_prompt_logs() {
+        // When there is no system message, fall back to promptLogs[].prompt
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let (prompt, idx) = extract_system_prompt(&session);
+        assert!(!prompt.is_empty());
+        assert!(prompt.contains("expert software engineer"));
+        assert!(prompt.contains("investigate before making changes"));
+        // No system message index since it came from promptLogs
+        assert!(idx.is_none());
     }
 
     // -----------------------------------------------------------------------
