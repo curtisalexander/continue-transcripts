@@ -993,7 +993,8 @@ fn render_tool_result_inline(
     tool_name: &str,
     tool_args: &str,
 ) -> String {
-    let content_text = item.message.content.text();
+    let raw_content = item.message.content.text();
+    let content_text = decode_file_uris_in_text(&raw_content);
     let label = if tool_name.is_empty() {
         "Tool Result".to_string()
     } else {
@@ -2798,6 +2799,28 @@ fn is_path_key(key: &str) -> bool {
     )
 }
 
+/// Find all `file:///...` URIs in free-form text and decode them into
+/// normal paths.  A URI ends at the first whitespace, `"`, `'`, `)`, `]`,
+/// `>`, or end-of-string.
+fn decode_file_uris_in_text(text: &str) -> String {
+    const PREFIX: &str = "file:///";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(PREFIX) {
+        out.push_str(&rest[..start]);
+        let uri_start = &rest[start..];
+        // Find the end of the URI
+        let end = uri_start
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ']' | '>'))
+            .unwrap_or(uri_start.len());
+        let uri = &uri_start[..end];
+        out.push_str(&decode_path(uri));
+        rest = &uri_start[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Decode a value for display: strips `file:///` URI prefixes and
 /// decodes percent-encoded bytes (e.g. `%3A` → `:`).
 fn decode_path(input: &str) -> String {
@@ -3471,6 +3494,37 @@ mod tests {
         assert_eq!(decode_path("C%3A%5CUsers%5Ctest"), r"C:\Users\test");
         // Plain path — no change
         assert_eq!(decode_path("/home/user/file.rs"), "/home/user/file.rs");
+    }
+
+    #[test]
+    fn test_decode_file_uris_in_text() {
+        // Windows-style file URI with percent-encoded colon
+        assert_eq!(
+            decode_file_uris_in_text("Successfully edited file:///c%3A/Users/test/file.rs"),
+            "Successfully edited c:/Users/test/file.rs"
+        );
+        // Multiple URIs in one string
+        assert_eq!(
+            decode_file_uris_in_text(
+                "Moved file:///c%3A/old%20dir/a.rs to file:///c%3A/new%20dir/b.rs"
+            ),
+            "Moved c:/old dir/a.rs to c:/new dir/b.rs"
+        );
+        // Unix file URI
+        assert_eq!(
+            decode_file_uris_in_text("Read file:///home/user/file.rs done"),
+            "Read /home/user/file.rs done"
+        );
+        // No file URIs — unchanged
+        assert_eq!(
+            decode_file_uris_in_text("No URIs here"),
+            "No URIs here"
+        );
+        // URI at end of string (no trailing space)
+        assert_eq!(
+            decode_file_uris_in_text("Edited file:///c%3A/Users/test.rs"),
+            "Edited c:/Users/test.rs"
+        );
     }
 
     #[test]
