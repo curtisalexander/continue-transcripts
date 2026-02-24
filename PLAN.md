@@ -8,6 +8,50 @@ system prompt, tool descriptions) only when needed.
 
 ---
 
+## Progress
+
+| Step | Status | Notes |
+|------|--------|-------|
+| 1. Rich sample fixture | **Done** | `tests/fixtures/sample-session-rich.json` — system prompt, thinking, ANSI tool results, varied tool calls |
+| 2. ANSI → HTML converter | **Done** | `ansi_to_html()` — hand-rolled SGR parser, One Dark palette, handles 30-37/40-47/90-97, bold/italic/underline/dim |
+| 3. Bare tool call rendering | **Done** | `render_tool_args()` — single-key shortcut ($ for Bash), key-value pairs, fallback JSON |
+| 4. System prompt extraction | **Done** | First `system` message extracted to collapsible `<details>` at top of page |
+| 5. Tool call nesting | **Done** | `render_session` groups assistant + subsequent tool messages; results shown inside `assistant-tool-group` div |
+| 6. Collapsible thinking & tool results | **Done** | Thinking: `<details>` (collapsed). Tool results: `<details class="tool-result-details">` (collapsed) |
+| 7. Tool descriptions reference | **Done** | `extract_tool_descriptions()` parses system prompt; `render_tools_reference()` shows grid panel |
+| 8. CSS updates | **Done** | New classes: `.system-prompt`, `.tools-reference`, `.assistant-tool-group`, `.tool-result-details`, `.tool-args-bare`, `.tool-args-kv`, etc. |
+| 9. JavaScript updates | **Done** | Expand/Collapse all toggle; truncation for `.tool-result-pre` |
+| 10. Tests | **Done** | 26 tests pass — ANSI, bare tool args, system prompt extraction, tool grouping, thinking collapsed, tool descriptions, rich fixture integration |
+
+---
+
+## Decisions Made
+
+1. **Tool descriptions source:** Parsed from the system prompt using `### ToolName` header patterns. Falls back to just listing tool names when no descriptions found.
+2. **Sidebar vs inline reference:** Expandable section at the top (below system prompt, above transcript). Simpler and works on all screen sizes.
+3. **ANSI palette:** One Dark palette — matches the dark code theme well.
+4. **Hand-rolled ANSI parser:** Covers SGR sequences (colors, bold, italic, underline, dim, reset). No new dependency needed.
+
+---
+
+## Remaining Work
+
+### 11. Performance improvements
+
+- Investigate if rayon parallelism can be further tuned (thread pool size, I/O batching)
+- Add a `--workers` CLI flag to let users control thread count
+- Consider parallel I/O for reading input files
+
+### 12. Terminal output summary
+
+- At the end of processing, print a summary with:
+  - Number of files read / written
+  - Success/failure status per file
+  - Visual indicators (green check / red X)
+  - Total elapsed time
+
+---
+
 ## Requirements (from user)
 
 | # | Requirement | Summary |
@@ -19,10 +63,12 @@ system prompt, tool descriptions) only when needed.
 | 5 | **System prompt at top** | Extract the system prompt from the session history, display it once at the very top of the transcript in a collapsible section (default collapsed). |
 | 6 | **Tool descriptions reference** | Collect descriptions of all tools that were called. Show as a reference panel (sidebar or expandable section) so the reader can look up what each tool does. |
 | 7 | **Richer sample data** | Create a sample session JSON that exercises all these features (ANSI codes, system prompt, thinking, multiple tool calls with varied argument shapes). |
+| 8 | **Performance** | Speed up reading/writing. Allow user to control worker count. |
+| 9 | **Terminal summary** | Show completion summary with file counts, status indicators, and elapsed time. |
 
 ---
 
-## Implementation Steps
+## Implementation Steps (original, for reference)
 
 ### 1. Create a richer sample session fixture
 
@@ -172,40 +218,3 @@ nesting visually.
   - Bare tool call rendering for different argument shapes
   - System prompt extraction
   - Tool call + result grouping logic
-
----
-
-## Order of Implementation
-
-1. Create rich sample fixture (step 1)
-2. ANSI → HTML converter (step 2)
-3. Bare tool call rendering (step 3)
-4. System prompt extraction (step 6)
-5. Tool call nesting under assistant (step 4)
-6. Collapsible thinking & tool results (step 5)
-7. Tool descriptions reference (step 7)
-8. CSS + JS updates (steps 8-9)
-9. Tests (step 10)
-10. Build, run against fixtures, inspect HTML output
-
----
-
-## Open Questions / Decisions
-
-1. **Tool descriptions source:** The system prompt in Continue.dev sessions may
-   or may not contain tool descriptions. If they're not in the JSON, we could
-   maintain a small built-in map of common tool names → descriptions. Need to
-   check real session data to decide.
-
-2. **Sidebar vs inline reference:** For tool descriptions, a fixed sidebar
-   works well on wide screens but may be awkward on mobile. An expandable
-   section at the top (next to system prompt) may be simpler and more robust.
-
-3. **ANSI palette:** Should we match the existing code block theme
-   (base16-ocean.dark) or use a standard terminal palette? The code theme
-   is dark, which pairs well with standard ANSI colors.
-
-4. **Crate vs hand-rolled ANSI parser:** A hand-rolled SGR parser covers 95%
-   of real terminal output. If we want full support (256-color, true-color),
-   we could use the `anstyle-parse` or `cansi` crate. Hand-rolled is simpler
-   and avoids a new dependency.

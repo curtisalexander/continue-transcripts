@@ -314,6 +314,212 @@ fn markdown_to_html(md: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// ANSI escape code → HTML conversion
+// ---------------------------------------------------------------------------
+
+/// Convert ANSI SGR escape sequences to styled HTML `<span>` elements.
+///
+/// Handles:
+/// - Standard foreground colors (30-37, 90-97)
+/// - Standard background colors (40-47, 100-107)
+/// - Bold (1), italic (3), underline (4), dim (2)
+/// - Reset (0)
+///
+/// Text is HTML-escaped. Unrecognised sequences are silently stripped.
+fn ansi_to_html(input: &str) -> String {
+    // One Dark–inspired terminal palette (dark background)
+    const FG_COLORS: [&str; 8] = [
+        "#282c34", // 0 black
+        "#e06c75", // 1 red
+        "#98c379", // 2 green
+        "#e5c07b", // 3 yellow
+        "#61afef", // 4 blue
+        "#c678dd", // 5 magenta
+        "#56b6c2", // 6 cyan
+        "#abb2bf", // 7 white
+    ];
+    const BRIGHT_FG: [&str; 8] = [
+        "#5c6370", // 0 bright black (gray)
+        "#e06c75", // 1 bright red
+        "#98c379", // 2 bright green
+        "#e5c07b", // 3 bright yellow
+        "#61afef", // 4 bright blue
+        "#c678dd", // 5 bright magenta
+        "#56b6c2", // 6 bright cyan
+        "#ffffff", // 7 bright white
+    ];
+    const BG_COLORS: [&str; 8] = [
+        "#282c34", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#abb2bf",
+    ];
+
+    struct Style {
+        fg: Option<String>,
+        bg: Option<String>,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        dim: bool,
+    }
+
+    impl Style {
+        fn new() -> Self {
+            Style {
+                fg: None,
+                bg: None,
+                bold: false,
+                italic: false,
+                underline: false,
+                dim: false,
+            }
+        }
+
+        fn reset(&mut self) {
+            *self = Style::new();
+        }
+
+        fn is_active(&self) -> bool {
+            self.fg.is_some()
+                || self.bg.is_some()
+                || self.bold
+                || self.italic
+                || self.underline
+                || self.dim
+        }
+
+        fn open_tag(&self) -> String {
+            if !self.is_active() {
+                return String::new();
+            }
+            let mut styles = Vec::new();
+            if let Some(ref c) = self.fg {
+                styles.push(format!("color:{c}"));
+            }
+            if let Some(ref c) = self.bg {
+                styles.push(format!("background-color:{c}"));
+            }
+            if self.bold {
+                styles.push("font-weight:bold".to_string());
+            }
+            if self.italic {
+                styles.push("font-style:italic".to_string());
+            }
+            if self.underline {
+                styles.push("text-decoration:underline".to_string());
+            }
+            if self.dim {
+                styles.push("opacity:0.7".to_string());
+            }
+            format!("<span style=\"{}\">", styles.join(";"))
+        }
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut style = Style::new();
+    let mut span_open = false;
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        // Check for ESC [ ... m  (CSI SGR sequence)
+        if i + 1 < len && bytes[i] == 0x1b && bytes[i + 1] == b'[' {
+            // Find the terminating letter
+            let start = i + 2;
+            let mut end = start;
+            while end < len && bytes[end] != b'm' && bytes[end] != b'A' && bytes[end] != b'B'
+                && bytes[end] != b'C' && bytes[end] != b'D' && bytes[end] != b'H'
+                && bytes[end] != b'J' && bytes[end] != b'K'
+            {
+                end += 1;
+            }
+            if end < len && bytes[end] == b'm' {
+                // SGR sequence – parse parameters
+                let params = &input[start..end];
+                if span_open {
+                    out.push_str("</span>");
+                    span_open = false;
+                }
+                if params.is_empty() || params == "0" {
+                    style.reset();
+                } else {
+                    let codes: Vec<u32> = params
+                        .split(';')
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    let mut ci = 0;
+                    while ci < codes.len() {
+                        match codes[ci] {
+                            0 => style.reset(),
+                            1 => style.bold = true,
+                            2 => style.dim = true,
+                            3 => style.italic = true,
+                            4 => style.underline = true,
+                            22 => {
+                                style.bold = false;
+                                style.dim = false;
+                            }
+                            23 => style.italic = false,
+                            24 => style.underline = false,
+                            30..=37 => {
+                                style.fg =
+                                    Some(FG_COLORS[(codes[ci] - 30) as usize].to_string());
+                            }
+                            39 => style.fg = None,
+                            40..=47 => {
+                                style.bg =
+                                    Some(BG_COLORS[(codes[ci] - 40) as usize].to_string());
+                            }
+                            49 => style.bg = None,
+                            90..=97 => {
+                                style.fg =
+                                    Some(BRIGHT_FG[(codes[ci] - 90) as usize].to_string());
+                            }
+                            100..=107 => {
+                                style.bg =
+                                    Some(BG_COLORS[(codes[ci] - 100) as usize].to_string());
+                            }
+                            // 256-color: 38;5;N or 48;5;N — skip for now
+                            38 | 48 => {
+                                if ci + 2 < codes.len() && codes[ci + 1] == 5 {
+                                    ci += 2; // skip the color index
+                                }
+                            }
+                            _ => {} // ignore unknown
+                        }
+                        ci += 1;
+                    }
+                }
+                if style.is_active() {
+                    out.push_str(&style.open_tag());
+                    span_open = true;
+                }
+                i = end + 1;
+            } else {
+                // Non-SGR CSI sequence (cursor movement, etc.) — strip it
+                i = end + 1;
+            }
+            continue;
+        }
+
+        // Regular character — HTML-escape it
+        match bytes[i] {
+            b'<' => out.push_str("&lt;"),
+            b'>' => out.push_str("&gt;"),
+            b'&' => out.push_str("&amp;"),
+            b'"' => out.push_str("&quot;"),
+            _ => out.push(bytes[i] as char),
+        }
+        i += 1;
+    }
+
+    if span_open {
+        out.push_str("</span>");
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
 // HTML generation
 // ---------------------------------------------------------------------------
 
@@ -339,6 +545,105 @@ fn role_class(role: &str) -> &str {
     }
 }
 
+/// Render a single tool call's arguments in a human-readable way.
+///
+/// Strategy:
+/// 1. If the arguments parse as a JSON object with a single string key
+///    (e.g. `{"command": "..."}` for Bash), display the value directly
+///    with a contextual prefix.
+/// 2. If it's an object with a few string-valued keys, display as
+///    key: value pairs (long values get code blocks).
+/// 3. Fallback: pretty-print as JSON.
+fn render_tool_args(name: &str, arguments: &str) -> String {
+    let parsed: serde_json::Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(_) => {
+            // Not valid JSON — just show raw
+            return format!(
+                "<pre class=\"tool-args\"><code>{}</code></pre>",
+                encode_text(arguments)
+            );
+        }
+    };
+
+    let obj = match parsed.as_object() {
+        Some(o) => o,
+        None => {
+            let pretty =
+                serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| arguments.to_string());
+            return format!(
+                "<pre class=\"tool-args\"><code>{}</code></pre>",
+                encode_text(&pretty)
+            );
+        }
+    };
+
+    // Single-string-key shortcuts
+    if obj.len() == 1 {
+        let (key, val) = obj.iter().next().unwrap();
+        if let Some(s) = val.as_str() {
+            // Bash / command  →  $ command
+            if name == "Bash" || key == "command" {
+                return format!(
+                    "<pre class=\"tool-args tool-args-bare\"><code><span class=\"tool-prompt\">$</span> {}</code></pre>",
+                    encode_text(s)
+                );
+            }
+            // Read / Glob / file_path / pattern  →  key: value
+            return format!(
+                "<div class=\"tool-args-kv\"><span class=\"tool-arg-key\">{}</span>: <code>{}</code></div>",
+                encode_text(key),
+                encode_text(s)
+            );
+        }
+    }
+
+    // Multiple keys — render as key: value pairs
+    let all_simple = obj.values().all(|v| v.is_string() || v.is_number() || v.is_boolean());
+    if all_simple && obj.len() <= 8 {
+        let mut html = String::new();
+        html.push_str("<div class=\"tool-args-kv-group\">");
+        for (key, val) in obj {
+            let display = match val.as_str() {
+                Some(s) => {
+                    // Long strings get a code block
+                    if s.contains('\n') || s.len() > 120 {
+                        format!(
+                            "<div class=\"tool-arg-key\">{}</div><pre class=\"tool-args\"><code>{}</code></pre>",
+                            encode_text(key),
+                            encode_text(s)
+                        )
+                    } else {
+                        format!(
+                            "<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">{}</span>: <code>{}</code></div>",
+                            encode_text(key),
+                            encode_text(s)
+                        )
+                    }
+                }
+                None => {
+                    let s = val.to_string();
+                    format!(
+                        "<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">{}</span>: <code>{}</code></div>",
+                        encode_text(key),
+                        encode_text(&s)
+                    )
+                }
+            };
+            html.push_str(&display);
+        }
+        html.push_str("</div>");
+        return html;
+    }
+
+    // Fallback: pretty-printed JSON
+    let pretty = serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| arguments.to_string());
+    format!(
+        "<pre class=\"tool-args\"><code>{}</code></pre>",
+        encode_text(&pretty)
+    )
+}
+
 fn render_tool_calls(tool_calls: &[ToolCallDelta]) -> String {
     let mut html = String::new();
     for tc in tool_calls {
@@ -349,14 +654,7 @@ fn render_tool_calls(tool_calls: &[ToolCallDelta]) -> String {
                 encode_text(&func.name)
             ));
             if !func.arguments.is_empty() {
-                // Try to pretty-print JSON arguments
-                let formatted = match serde_json::from_str::<serde_json::Value>(&func.arguments) {
-                    Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|_| func.arguments.clone()),
-                    Err(_) => func.arguments.clone(),
-                };
-                html.push_str("<pre class=\"tool-args\"><code>");
-                html.push_str(&encode_text(&formatted));
-                html.push_str("</code></pre>");
+                html.push_str(&render_tool_args(&func.name, &func.arguments));
             }
             html.push_str("</div>");
         }
@@ -397,6 +695,8 @@ fn render_context_items(items: &[ContextItem]) -> String {
     html
 }
 
+/// Render a single message (user, assistant, system, thinking).
+/// Tool-result messages are rendered separately via `render_tool_result_inline`.
 fn render_message(item: &ChatHistoryItem) -> String {
     let msg = &item.message;
     let role = msg.role.as_str();
@@ -409,8 +709,8 @@ fn render_message(item: &ChatHistoryItem) -> String {
     html.push_str(&format!("<div class=\"message {cls}\">\n"));
 
     if is_thinking {
-        // Thinking sections are collapsible (expanded by default)
-        html.push_str("  <details open class=\"thinking-details\">\n");
+        // Thinking sections are collapsible (default **collapsed**)
+        html.push_str("  <details class=\"thinking-details\">\n");
         html.push_str(&format!(
             "    <summary class=\"message-header\"><span class=\"role-label\">{label}</span></summary>\n"
         ));
@@ -439,10 +739,13 @@ fn render_message(item: &ChatHistoryItem) -> String {
         html.push_str("  </div>\n");
     }
 
-    // Tool calls
+    // Tool calls (rendered inside the assistant message div)
     if let Some(calls) = &msg.tool_calls {
         if !calls.is_empty() {
+            html.push_str("  <div class=\"assistant-tool-group\">\n");
             html.push_str(&render_tool_calls(calls));
+            // Placeholder for tool results — they'll be injected by render_session
+            html.push_str("  </div>\n");
         }
     }
 
@@ -451,6 +754,153 @@ fn render_message(item: &ChatHistoryItem) -> String {
     }
 
     html.push_str("</div>\n");
+    html
+}
+
+/// Render a tool result message as a collapsible `<details>` block.
+/// `tool_name` is the name of the tool call this result responds to (if known).
+fn render_tool_result_inline(item: &ChatHistoryItem, tool_name: &str) -> String {
+    let content_text = item.message.content.text();
+    let label = if tool_name.is_empty() {
+        "Tool Result".to_string()
+    } else {
+        format!("Result: {}", tool_name)
+    };
+
+    let mut html = String::new();
+    html.push_str("    <details class=\"tool-result-details\">\n");
+    html.push_str(&format!(
+        "      <summary>{}</summary>\n",
+        encode_text(&label)
+    ));
+    html.push_str("      <div class=\"tool-result-content\">\n");
+
+    if !content_text.is_empty() {
+        // Check if content has ANSI escape codes
+        let has_ansi = content_text.contains('\x1b');
+        if has_ansi {
+            html.push_str("        <pre class=\"tool-result-pre\"><code>");
+            html.push_str(&ansi_to_html(&content_text));
+            html.push_str("</code></pre>\n");
+        } else {
+            html.push_str("        <pre class=\"tool-result-pre\"><code>");
+            html.push_str(&encode_text(&content_text));
+            html.push_str("</code></pre>\n");
+        }
+    }
+
+    html.push_str("      </div>\n");
+    html.push_str("    </details>\n");
+    html
+}
+
+/// Extract tool descriptions from a system prompt.
+/// Looks for patterns like "### ToolName\nDescription text"
+fn extract_tool_descriptions(system_content: &str) -> Vec<(String, String)> {
+    let mut tools: Vec<(String, String)> = Vec::new();
+    let lines: Vec<&str> = system_content.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i].trim();
+        // Match ### ToolName or ## ToolName
+        if (line.starts_with("### ") || line.starts_with("## ")) && !line.contains(' ') == false {
+            let header = line.trim_start_matches('#').trim();
+            // Check if it looks like a single-word tool name
+            if !header.is_empty()
+                && header.len() < 40
+                && !header.contains('.')
+                && header.chars().next().map_or(false, |c| c.is_uppercase())
+            {
+                // Collect description lines until next header or blank-blank
+                let mut desc_lines = Vec::new();
+                i += 1;
+                while i < lines.len() {
+                    let next = lines[i];
+                    if next.trim().starts_with("### ") || next.trim().starts_with("## ") {
+                        break;
+                    }
+                    desc_lines.push(next);
+                    i += 1;
+                }
+                let desc = desc_lines
+                    .join("\n")
+                    .trim()
+                    .lines()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .trim()
+                    .to_string();
+                if !desc.is_empty() {
+                    tools.push((header.to_string(), desc));
+                }
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    tools
+}
+
+/// Collect unique tool names from all tool calls in the session.
+fn collect_tool_names(history: &[ChatHistoryItem]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in history {
+        if let Some(calls) = &item.message.tool_calls {
+            for tc in calls {
+                if let Some(func) = &tc.function {
+                    if !func.name.is_empty() && seen.insert(func.name.clone()) {
+                        names.push(func.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Render the tools reference panel.
+fn render_tools_reference(
+    tool_names: &[String],
+    tool_descriptions: &[(String, String)],
+) -> String {
+    if tool_names.is_empty() {
+        return String::new();
+    }
+
+    let mut html = String::new();
+    html.push_str("<details class=\"tools-reference\">\n");
+    html.push_str("  <summary>Tools Used (");
+    html.push_str(&tool_names.len().to_string());
+    html.push_str(")</summary>\n");
+    html.push_str("  <div class=\"tools-reference-content\">\n");
+
+    // Build a lookup from description list
+    let desc_map: std::collections::HashMap<&str, &str> = tool_descriptions
+        .iter()
+        .map(|(name, desc)| (name.as_str(), desc.as_str()))
+        .collect();
+
+    for name in tool_names {
+        html.push_str("    <div class=\"tool-ref-item\">\n");
+        html.push_str(&format!(
+            "      <div class=\"tool-ref-name\">{}</div>\n",
+            encode_text(name)
+        ));
+        if let Some(desc) = desc_map.get(name.as_str()) {
+            html.push_str(&format!(
+                "      <div class=\"tool-ref-desc\">{}</div>\n",
+                encode_text(desc)
+            ));
+        }
+        html.push_str("    </div>\n");
+    }
+
+    html.push_str("  </div>\n");
+    html.push_str("</details>\n");
     html
 }
 
@@ -489,17 +939,147 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         &session.title
     };
 
+    // --- Extract system prompt (first system message) ---
+    let mut system_prompt_html = String::new();
+    let mut system_prompt_content = String::new();
+    let mut system_prompt_idx: Option<usize> = None;
+
+    for (idx, item) in session.history.iter().enumerate() {
+        if item.message.role == "system" {
+            system_prompt_idx = Some(idx);
+            system_prompt_content = item.message.content.text();
+            break;
+        }
+    }
+
+    if !system_prompt_content.is_empty() {
+        system_prompt_html = format!(
+            "<details class=\"system-prompt\">\n  \
+                <summary>System Prompt</summary>\n  \
+                <div class=\"system-prompt-content\">\n    {}\n  </div>\n\
+             </details>\n",
+            markdown_to_html(&system_prompt_content)
+        );
+    }
+
+    // --- Collect tool names and descriptions ---
+    let tool_names = collect_tool_names(&session.history);
+    let tool_descriptions = if !system_prompt_content.is_empty() {
+        extract_tool_descriptions(&system_prompt_content)
+    } else {
+        Vec::new()
+    };
+    let tools_reference_html = render_tools_reference(&tool_names, &tool_descriptions);
+
+    // --- Render messages with tool-call/tool-result grouping ---
     let mut messages_html = String::new();
     let mut user_count = 0u32;
     let mut assistant_count = 0u32;
+    let history = &session.history;
+    let len = history.len();
+    let mut i = 0;
 
-    for item in &session.history {
-        match item.message.role.as_str() {
-            "user" => user_count += 1,
-            "assistant" => assistant_count += 1,
-            _ => {}
+    while i < len {
+        let item = &history[i];
+        let role = item.message.role.as_str();
+
+        // Skip the system prompt we already extracted
+        if Some(i) == system_prompt_idx {
+            i += 1;
+            continue;
         }
-        messages_html.push_str(&render_message(item));
+
+        match role {
+            "user" => {
+                user_count += 1;
+                messages_html.push_str(&render_message(item));
+                i += 1;
+            }
+            "assistant" => {
+                assistant_count += 1;
+                let mut msg_html = render_message(item);
+
+                // Count how many tool calls this assistant message has
+                let call_count = item
+                    .message
+                    .tool_calls
+                    .as_ref()
+                    .map_or(0, |c| c.len());
+
+                if call_count > 0 {
+                    // Collect the tool call names for matching with results
+                    let call_names: Vec<String> = item
+                        .message
+                        .tool_calls
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|tc| tc.function.as_ref().map(|f| f.name.clone()))
+                        .collect();
+
+                    // Look ahead for consecutive tool-result messages
+                    let mut tool_results_html = String::new();
+                    let mut result_idx = 0;
+                    let mut j = i + 1;
+                    while j < len && history[j].message.role == "tool" {
+                        let tool_name = if result_idx < call_names.len() {
+                            &call_names[result_idx]
+                        } else {
+                            ""
+                        };
+                        tool_results_html
+                            .push_str(&render_tool_result_inline(&history[j], tool_name));
+                        result_idx += 1;
+                        j += 1;
+                    }
+
+                    // Also swallow any thinking messages that appear between
+                    // the tool results and the next non-thinking/tool message
+                    // (they belong to this assistant turn)
+
+                    if !tool_results_html.is_empty() {
+                        // Inject tool results inside the assistant-tool-group div
+                        // (right before the closing </div> of assistant-tool-group)
+                        let injection_point = "  </div>\n</div>\n";
+                        if let Some(pos) = msg_html.rfind(injection_point) {
+                            msg_html.insert_str(pos + 8, &tool_results_html);
+                            // pos + 8 = just inside the assistant-tool-group </div>
+                        } else {
+                            // Fallback: append before closing message div
+                            let close = "</div>\n";
+                            if let Some(pos) = msg_html.rfind(close) {
+                                msg_html.insert_str(pos, &tool_results_html);
+                            }
+                        }
+                    }
+
+                    i = j; // skip past consumed tool messages
+                } else {
+                    i += 1;
+                }
+
+                messages_html.push_str(&msg_html);
+            }
+            "thinking" => {
+                messages_html.push_str(&render_message(item));
+                i += 1;
+            }
+            "tool" => {
+                // Orphaned tool result (not preceded by an assistant with tool calls)
+                // Render standalone with collapsible wrapper
+                let mut html = String::new();
+                html.push_str("<div class=\"message tool-result\">\n");
+                html.push_str(&render_tool_result_inline(item, ""));
+                html.push_str("</div>\n");
+                messages_html.push_str(&html);
+                i += 1;
+            }
+            _ => {
+                // system (non-first) or other roles — render normally
+                messages_html.push_str(&render_message(item));
+                i += 1;
+            }
+        }
     }
 
     let date_str = session
@@ -544,6 +1124,8 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
       <span class="meta-item">{user_count} user messages &middot; {assistant_count} assistant messages</span>
     </div>
   </header>
+{system_prompt}
+{tools_reference}
   <main class="transcript">
 {messages}
   </main>
@@ -563,6 +1145,8 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         workspace = encode_text(workspace),
         user_count = user_count,
         assistant_count = assistant_count,
+        system_prompt = system_prompt_html,
+        tools_reference = tools_reference_html,
         messages = messages_html,
     )
 }
@@ -824,6 +1408,100 @@ pre.highlighted-code {
   font-family: "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
 }
 
+/* ----- System prompt (top of page, collapsed) ----- */
+.system-prompt {
+  background: var(--system-bg);
+  border: 1px solid var(--system-border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.system-prompt > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--system-label);
+  user-select: none;
+  list-style: none;
+}
+
+.system-prompt > summary::-webkit-details-marker { display: none; }
+.system-prompt > summary::before {
+  content: '\25B6  ';
+  font-size: 0.65rem;
+  vertical-align: 1px;
+}
+.system-prompt[open] > summary::before {
+  content: '\25BC  ';
+}
+
+.system-prompt-content {
+  margin-top: 12px;
+  font-size: 0.88rem;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+/* ----- Tools reference panel ----- */
+.tools-reference {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.tools-reference > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--tool-call-border);
+  user-select: none;
+  list-style: none;
+}
+
+.tools-reference > summary::-webkit-details-marker { display: none; }
+.tools-reference > summary::before {
+  content: '\25B6  ';
+  font-size: 0.65rem;
+  vertical-align: 1px;
+}
+.tools-reference[open] > summary::before {
+  content: '\25BC  ';
+}
+
+.tools-reference-content {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 10px;
+}
+
+.tool-ref-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.tool-ref-name {
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: var(--tool-call-border);
+  margin-bottom: 4px;
+}
+
+.tool-ref-desc {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
 /* ----- Tool calls ----- */
 .tool-call {
   background: var(--tool-call-bg);
@@ -848,6 +1526,105 @@ pre.highlighted-code {
   border-radius: 6px;
   font-size: 0.82rem !important;
   max-height: 300px;
+  overflow-y: auto;
+}
+
+.tool-args-bare {
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+}
+
+.tool-prompt {
+  color: var(--tool-call-border);
+  font-weight: bold;
+  user-select: none;
+}
+
+.tool-args-kv {
+  font-size: 0.88rem;
+  padding: 4px 0;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+}
+
+.tool-args-kv code {
+  background: var(--inline-code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+
+.tool-args-kv-group {
+  font-size: 0.88rem;
+  padding: 4px 0;
+}
+
+.tool-arg-key {
+  font-weight: 600;
+  color: var(--tool-call-border);
+  font-size: 0.82rem;
+}
+
+.tool-arg-line {
+  padding: 2px 0;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+}
+
+.tool-arg-line code {
+  background: var(--inline-code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+
+/* ----- Assistant tool group (nesting) ----- */
+.assistant-tool-group {
+  margin-top: 12px;
+  margin-left: 16px;
+  padding-left: 12px;
+  border-left: 2px solid var(--tool-call-border);
+}
+
+/* ----- Tool result details (collapsible, default collapsed) ----- */
+.tool-result-details {
+  margin-top: 10px;
+  border: 1px solid var(--tool-result-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tool-result-details > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  background: var(--tool-result-bg);
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: var(--tool-result-label);
+  user-select: none;
+  list-style: none;
+}
+
+.tool-result-details > summary::-webkit-details-marker { display: none; }
+.tool-result-details > summary::before {
+  content: '\25B6  ';
+  font-size: 0.6rem;
+  vertical-align: 1px;
+}
+.tool-result-details[open] > summary::before {
+  content: '\25BC  ';
+}
+
+.tool-result-content {
+  padding: 0;
+}
+
+.tool-result-pre {
+  background: var(--code-bg) !important;
+  color: var(--code-text) !important;
+  padding: 10px 14px !important;
+  margin: 0 !important;
+  border-radius: 0;
+  border: none !important;
+  font-size: 0.82rem !important;
+  max-height: 400px;
   overflow-y: auto;
 }
 
@@ -930,7 +1707,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   // Truncation for long blocks
-  document.querySelectorAll('.message-content pre, .tool-args, .context-content').forEach(function(el) {
+  document.querySelectorAll('.message-content pre, .tool-args, .context-content, .tool-result-pre').forEach(function(el) {
     if (el.scrollHeight > 350) {
       el.style.maxHeight = '300px';
       el.style.overflow = 'hidden';
@@ -953,6 +1730,27 @@ document.addEventListener('DOMContentLoaded', function() {
       el.parentElement.insertBefore(btn, el.nextSibling);
     }
   });
+
+  // Expand/Collapse all toggle for tool details
+  var transcript = document.querySelector('.transcript');
+  if (transcript) {
+    var detailsEls = transcript.querySelectorAll('details.tool-result-details, details.thinking-details');
+    if (detailsEls.length > 2) {
+      var toggleBtn = document.createElement('button');
+      toggleBtn.textContent = 'Expand all details';
+      toggleBtn.className = 'expand-collapse-toggle';
+      toggleBtn.style.cssText = 'display:block;margin:0 auto 16px;padding:6px 20px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;font-size:0.82rem;';
+      var allExpanded = false;
+      toggleBtn.addEventListener('click', function() {
+        allExpanded = !allExpanded;
+        detailsEls.forEach(function(d) {
+          d.open = allExpanded;
+        });
+        toggleBtn.textContent = allExpanded ? 'Collapse all details' : 'Expand all details';
+      });
+      transcript.parentElement.insertBefore(toggleBtn, transcript);
+    }
+  }
 });
 </script>"#;
 
@@ -1259,5 +2057,308 @@ mod tests {
         assert!(html.contains("Test"));
         assert!(html.contains("User"));
         assert!(html.contains("Hello"));
+    }
+
+    // -----------------------------------------------------------------------
+    // ANSI → HTML tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ansi_plain_text() {
+        assert_eq!(ansi_to_html("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_ansi_html_entities_escaped() {
+        assert_eq!(ansi_to_html("<b>&</b>"), "&lt;b&gt;&amp;&lt;/b&gt;");
+    }
+
+    #[test]
+    fn test_ansi_green_text() {
+        let result = ansi_to_html("\x1b[32mpass\x1b[0m");
+        assert!(result.contains("color:#98c379"));
+        assert!(result.contains("pass"));
+        assert!(result.contains("</span>"));
+    }
+
+    #[test]
+    fn test_ansi_red_text() {
+        let result = ansi_to_html("\x1b[31mfail\x1b[0m");
+        assert!(result.contains("color:#e06c75"));
+        assert!(result.contains("fail"));
+    }
+
+    #[test]
+    fn test_ansi_bold() {
+        let result = ansi_to_html("\x1b[1mbold text\x1b[0m");
+        assert!(result.contains("font-weight:bold"));
+        assert!(result.contains("bold text"));
+    }
+
+    #[test]
+    fn test_ansi_multiple_sequences() {
+        let input = "\x1b[32m✓\x1b[0m pass  \x1b[31m✕\x1b[0m fail";
+        let result = ansi_to_html(input);
+        // Should have green span for checkmark and red for X
+        assert!(result.contains("#98c379"));
+        assert!(result.contains("#e06c75"));
+    }
+
+    #[test]
+    fn test_ansi_reset_closes_span() {
+        let result = ansi_to_html("\x1b[1m\x1b[31mred bold\x1b[0m normal");
+        assert!(result.contains("</span>"));
+        assert!(result.contains("normal"));
+    }
+
+    #[test]
+    fn test_ansi_bright_colors() {
+        let result = ansi_to_html("\x1b[90mgray\x1b[0m");
+        assert!(result.contains("color:#5c6370"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Bare tool call rendering tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_tool_args_bash_command() {
+        let result = render_tool_args("Bash", r#"{"command": "npm test"}"#);
+        assert!(result.contains("$"));
+        assert!(result.contains("npm test"));
+        assert!(result.contains("tool-args-bare"));
+    }
+
+    #[test]
+    fn test_render_tool_args_read_file() {
+        let result = render_tool_args("Read", r#"{"file_path": "/src/main.rs"}"#);
+        assert!(result.contains("file_path"));
+        assert!(result.contains("/src/main.rs"));
+        assert!(result.contains("tool-args-kv"));
+    }
+
+    #[test]
+    fn test_render_tool_args_edit_multikey() {
+        let result = render_tool_args(
+            "Edit",
+            r#"{"file_path": "test.rs", "old_string": "foo", "new_string": "bar"}"#,
+        );
+        assert!(result.contains("file_path"));
+        assert!(result.contains("old_string"));
+        assert!(result.contains("new_string"));
+    }
+
+    #[test]
+    fn test_render_tool_args_invalid_json() {
+        let result = render_tool_args("Unknown", "not json at all");
+        assert!(result.contains("not json at all"));
+    }
+
+    // -----------------------------------------------------------------------
+    // System prompt extraction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_system_prompt_extracted_to_top() {
+        let session = Session {
+            session_id: "sp-test".to_string(),
+            title: "System Prompt Test".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "system".to_string(),
+                        content: MessageContent::Text("You are a helpful assistant.".to_string()),
+                        tool_calls: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                },
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "user".to_string(),
+                        content: MessageContent::Text("Hello".to_string()),
+                        tool_calls: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // System prompt should be in a collapsed details element
+        assert!(html.contains("class=\"system-prompt\""));
+        assert!(html.contains("System Prompt"));
+        assert!(html.contains("helpful assistant"));
+        // System message should NOT also appear as a standalone message in the transcript
+        // (it's extracted to the top)
+        let transcript_start = html.find("class=\"transcript\"").unwrap();
+        let transcript_section = &html[transcript_start..];
+        assert!(!transcript_section.contains("class=\"message system\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool call + result grouping tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tool_results_nested_under_assistant() {
+        let session = Session {
+            session_id: "group-test".to_string(),
+            title: "Grouping Test".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "assistant".to_string(),
+                        content: MessageContent::Text("Let me check.".to_string()),
+                        tool_calls: Some(vec![ToolCallDelta {
+                            function: Some(ToolCallFunction {
+                                name: "Bash".to_string(),
+                                arguments: r#"{"command": "ls"}"#.to_string(),
+                            }),
+                            id: Some("c1".to_string()),
+                            call_type: Some("function".to_string()),
+                        }]),
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                },
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "tool".to_string(),
+                        content: MessageContent::Text("file1.txt\nfile2.txt".to_string()),
+                        tool_calls: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // Tool result should be inside a details element with label
+        assert!(html.contains("tool-result-details"));
+        assert!(html.contains("Result: Bash"));
+        // Tool result should be nested inside the assistant message
+        // (inside assistant-tool-group)
+        assert!(html.contains("assistant-tool-group"));
+        // Should NOT have a standalone tool-result message
+        assert!(!html.contains("class=\"message tool-result\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // Thinking blocks default collapsed
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_thinking_default_collapsed() {
+        let item = ChatHistoryItem {
+            message: ChatMessage {
+                role: "thinking".to_string(),
+                content: MessageContent::Text("I should check the tests.".to_string()),
+                tool_calls: None,
+            },
+            context_items: vec![],
+            prompt_logs: None,
+        };
+
+        let html = render_message(&item);
+        // Should be <details class="thinking-details"> WITHOUT the "open" attribute
+        assert!(html.contains("<details class=\"thinking-details\">"));
+        assert!(!html.contains("<details open"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool descriptions extraction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_tool_descriptions() {
+        let system = "## Tools\n\n### Bash\nExecute a shell command and return its output.\n\n### Read\nRead the contents of a file from the local filesystem.\n\n### Edit\nPerform exact string replacements in files.\n";
+        let descs = extract_tool_descriptions(system);
+        assert!(descs.len() >= 3);
+        assert!(descs.iter().any(|(name, _)| name == "Bash"));
+        assert!(descs.iter().any(|(name, _)| name == "Read"));
+        assert!(descs.iter().any(|(name, _)| name == "Edit"));
+    }
+
+    #[test]
+    fn test_collect_tool_names() {
+        let history = vec![
+            ChatHistoryItem {
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: MessageContent::Text(String::new()),
+                    tool_calls: Some(vec![
+                        ToolCallDelta {
+                            function: Some(ToolCallFunction {
+                                name: "Bash".to_string(),
+                                arguments: String::new(),
+                            }),
+                            id: None,
+                            call_type: None,
+                        },
+                        ToolCallDelta {
+                            function: Some(ToolCallFunction {
+                                name: "Read".to_string(),
+                                arguments: String::new(),
+                            }),
+                            id: None,
+                            call_type: None,
+                        },
+                    ]),
+                },
+                context_items: vec![],
+                prompt_logs: None,
+            },
+            ChatHistoryItem {
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: MessageContent::Text(String::new()),
+                    tool_calls: Some(vec![ToolCallDelta {
+                        function: Some(ToolCallFunction {
+                            name: "Bash".to_string(), // duplicate
+                            arguments: String::new(),
+                        }),
+                        id: None,
+                        call_type: None,
+                    }]),
+                },
+                context_items: vec![],
+                prompt_logs: None,
+            },
+        ];
+
+        let names = collect_tool_names(&history);
+        assert_eq!(names, vec!["Bash", "Read"]); // deduplicated, ordered
+    }
+
+    // -----------------------------------------------------------------------
+    // Rich fixture integration test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_rich_fixture() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-rich.json")
+            .expect("rich fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        // System prompt extracted
+        assert!(html.contains("class=\"system-prompt\""));
+        // Tools reference panel present
+        assert!(html.contains("class=\"tools-reference\""));
+        // ANSI colors converted (green check mark from test output)
+        assert!(html.contains("color:#98c379"));
+        // Thinking block present and collapsed
+        assert!(html.contains("thinking-details"));
+        // Tool calls present
+        assert!(html.contains("tool-call-header"));
+        // Bare Bash rendering
+        assert!(html.contains("tool-prompt"));
     }
 }
