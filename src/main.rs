@@ -993,7 +993,8 @@ fn render_tool_result_inline(
     tool_name: &str,
     tool_args: &str,
 ) -> String {
-    let content_text = item.message.content.text();
+    let raw_content = item.message.content.text();
+    let content_text = decode_file_uris_in_text(&raw_content);
     let label = if tool_name.is_empty() {
         "Tool Result".to_string()
     } else {
@@ -1016,13 +1017,9 @@ fn render_tool_result_inline(
             html.push_str(&ansi_to_html(&content_text));
             html.push_str("</code></pre>\n");
         } else {
-            // For Read/read_file results, try to syntax-highlight based on
-            // the file extension from the tool arguments.
-            let highlighted = if tool_name == "Read" || tool_name == "read_file" {
-                try_highlight_read_result(tool_args, &content_text)
-            } else {
-                None
-            };
+            // Try to syntax-highlight based on the file extension from
+            // the tool arguments (works for any tool with a file path arg).
+            let highlighted = try_highlight_tool_result(tool_args, &content_text);
             if let Some(hl) = highlighted {
                 html.push_str("        ");
                 html.push_str(&hl);
@@ -1040,15 +1037,15 @@ fn render_tool_result_inline(
     html
 }
 
-/// Attempt to syntax-highlight the content of a Read tool result.
-/// Extracts the file path from the JSON arguments, strips line-number prefixes
-/// (e.g. "     1\t..."), and applies syntax highlighting based on file extension.
-fn try_highlight_read_result(tool_args: &str, content: &str) -> Option<String> {
+/// Attempt to syntax-highlight the content of a tool result.
+/// Extracts a file path from the JSON arguments (checking common key names),
+/// strips line-number prefixes (e.g. "     1\t..."), and applies syntax
+/// highlighting based on the file extension.
+fn try_highlight_tool_result(tool_args: &str, content: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(tool_args).ok()?;
-    let file_path = parsed
-        .get("file_path")
-        .or_else(|| parsed.get("filepath"))
-        .and_then(|v| v.as_str())?;
+    let file_path = ["file_path", "filepath", "notebook_path", "path", "file"]
+        .iter()
+        .find_map(|key| parsed.get(*key).and_then(|v| v.as_str()))?;
     let lang = lang_from_filename(file_path);
     if lang.is_empty() {
         return None;
@@ -2798,6 +2795,28 @@ fn is_path_key(key: &str) -> bool {
     )
 }
 
+/// Find all `file:///...` URIs in free-form text and decode them into
+/// normal paths.  A URI ends at the first whitespace, `"`, `'`, `)`, `]`,
+/// `>`, or end-of-string.
+fn decode_file_uris_in_text(text: &str) -> String {
+    const PREFIX: &str = "file:///";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(PREFIX) {
+        out.push_str(&rest[..start]);
+        let uri_start = &rest[start..];
+        // Find the end of the URI
+        let end = uri_start
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | ']' | '>'))
+            .unwrap_or(uri_start.len());
+        let uri = &uri_start[..end];
+        out.push_str(&decode_path(uri));
+        rest = &uri_start[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Decode a value for display: strips `file:///` URI prefixes and
 /// decodes percent-encoded bytes (e.g. `%3A` → `:`).
 fn decode_path(input: &str) -> String {
@@ -3160,7 +3179,7 @@ fn render_index(entries: &[(String, String, String)]) -> String {
     let mut rows = String::new();
     for (title, filename, date) in entries {
         rows.push_str(&format!(
-            "    <tr>\n      <td><a href=\"{filename}\">{title}</a></td>\n      <td>{date}</td>\n    </tr>\n",
+            "    <tr>\n      <td><a href=\"{filename}\">{title}</a></td>\n      <td style=\"white-space:nowrap\">{date}</td>\n    </tr>\n",
             filename = encode_text(filename),
             title = encode_text(title),
             date = encode_text(date),
@@ -3197,7 +3216,7 @@ fn render_index(entries: &[(String, String, String)]) -> String {
   </header>
   <input type="text" class="search-box" placeholder="Filter sessions by title or date\u2026" autocomplete="off">
   <table>
-    <thead><tr><th>Session</th><th>Date</th></tr></thead>
+    <thead><tr><th>Session</th><th style="width: 22ch;">Date</th></tr></thead>
     <tbody>
 {rows}
     </tbody>
@@ -3471,6 +3490,37 @@ mod tests {
         assert_eq!(decode_path("C%3A%5CUsers%5Ctest"), r"C:\Users\test");
         // Plain path — no change
         assert_eq!(decode_path("/home/user/file.rs"), "/home/user/file.rs");
+    }
+
+    #[test]
+    fn test_decode_file_uris_in_text() {
+        // Windows-style file URI with percent-encoded colon
+        assert_eq!(
+            decode_file_uris_in_text("Successfully edited file:///c%3A/Users/test/file.rs"),
+            "Successfully edited c:/Users/test/file.rs"
+        );
+        // Multiple URIs in one string
+        assert_eq!(
+            decode_file_uris_in_text(
+                "Moved file:///c%3A/old%20dir/a.rs to file:///c%3A/new%20dir/b.rs"
+            ),
+            "Moved c:/old dir/a.rs to c:/new dir/b.rs"
+        );
+        // Unix file URI
+        assert_eq!(
+            decode_file_uris_in_text("Read file:///home/user/file.rs done"),
+            "Read /home/user/file.rs done"
+        );
+        // No file URIs — unchanged
+        assert_eq!(
+            decode_file_uris_in_text("No URIs here"),
+            "No URIs here"
+        );
+        // URI at end of string (no trailing space)
+        assert_eq!(
+            decode_file_uris_in_text("Edited file:///c%3A/Users/test.rs"),
+            "Edited c:/Users/test.rs"
+        );
     }
 
     #[test]
@@ -3802,21 +3852,32 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_try_highlight_read_result() {
+    fn test_try_highlight_tool_result() {
         let args = r#"{"file_path": "/home/user/test.rs"}"#;
         let content = "     1\tfn main() {\n     2\t    println!(\"hello\");\n     3\t}";
-        let result = try_highlight_read_result(args, content);
+        let result = try_highlight_tool_result(args, content);
         assert!(result.is_some());
         let hl = result.unwrap();
         assert!(hl.contains("highlighted-code"));
     }
 
     #[test]
-    fn test_try_highlight_read_result_no_extension() {
+    fn test_try_highlight_tool_result_no_extension() {
         let args = r#"{"file_path": "/home/user/README"}"#;
         let content = "just some text";
-        let result = try_highlight_read_result(args, content);
+        let result = try_highlight_tool_result(args, content);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_highlight_tool_result_path_key() {
+        // Grep-style tool with "path" key pointing to a Python file
+        let args = r#"{"pattern": "import", "path": "/home/user/app.py"}"#;
+        let content = "import os\nimport sys";
+        let result = try_highlight_tool_result(args, content);
+        assert!(result.is_some());
+        let hl = result.unwrap();
+        assert!(hl.contains("highlighted-code"));
     }
 
     // -----------------------------------------------------------------------
