@@ -4,6 +4,7 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser as MdParser, Tag, Tag
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use syntect::highlighting::ThemeSet;
@@ -1006,7 +1007,7 @@ fn render_tool_result_inline(
             if let Some(hl) = highlighted {
                 html.push_str("        ");
                 html.push_str(&hl);
-                html.push_str("\n");
+                html.push('\n');
             } else {
                 html.push_str("        <pre class=\"tool-result-pre\"><code>");
                 html.push_str(&encode_text(&content_text));
@@ -1648,10 +1649,11 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         .or_else(|| source_path.and_then(file_modified_date))
         .unwrap_or_else(|| "Unknown date".to_string());
 
-    let workspace = if session.workspace_directory.is_empty() {
-        "N/A"
+    let workspace_decoded = percent_decode(&session.workspace_directory);
+    let workspace = if workspace_decoded.is_empty() {
+        "N/A".to_string()
     } else {
-        &session.workspace_directory
+        workspace_decoded
     };
 
     let model = extract_model(session);
@@ -1714,7 +1716,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         date = encode_text(&date_str),
         model_meta = model_meta,
         tokens_meta = tokens_meta,
-        workspace = encode_text(workspace),
+        workspace = encode_text(&workspace),
         user_count = user_count,
         assistant_count = assistant_count,
         system_prompt = system_prompt_html,
@@ -2528,9 +2530,37 @@ fn sanitize_filename(s: &str) -> String {
     truncated.trim_end_matches('_').to_string()
 }
 
-/// Generate a unique filename from a title, appending a numeric suffix if needed.
+/// Extract a YYYY-MM-DD date prefix from a date string.
+/// Handles ISO 8601 (e.g. "2025-06-15T10:30:00Z") and plain date strings.
+fn extract_date_prefix(date: &str) -> Option<String> {
+    // Try to extract YYYY-MM-DD from the beginning of the string
+    if date.len() >= 10 {
+        let prefix = &date[..10];
+        // Validate it looks like a date: YYYY-MM-DD
+        let parts: Vec<&str> = prefix.split('-').collect();
+        if parts.len() == 3
+            && parts[0].len() == 4
+            && parts[1].len() == 2
+            && parts[2].len() == 2
+            && parts[0].chars().all(|c| c.is_ascii_digit())
+            && parts[1].chars().all(|c| c.is_ascii_digit())
+            && parts[2].chars().all(|c| c.is_ascii_digit())
+        {
+            return Some(prefix.to_string());
+        }
+    }
+    None
+}
+
+/// Generate a unique filename from a title and optional date, appending a
+/// numeric suffix if needed. When a date is available, the filename is
+/// prefixed with `YYYY-MM-DD_` for easy chronological sorting.
 /// The `used` set tracks filenames already claimed in this run.
-fn unique_filename(title: &str, used: &mut std::collections::HashSet<String>) -> String {
+fn unique_filename(
+    title: &str,
+    date: Option<&str>,
+    used: &mut std::collections::HashSet<String>,
+) -> String {
     let base = sanitize_filename(title);
     let base = if base.is_empty() {
         "untitled".to_string()
@@ -2538,20 +2568,49 @@ fn unique_filename(title: &str, used: &mut std::collections::HashSet<String>) ->
         base
     };
 
-    let candidate = format!("{}.html", base);
+    // Prepend date prefix if available
+    let base = match date.and_then(extract_date_prefix) {
+        Some(prefix) => format!("{prefix}_{base}"),
+        None => base,
+    };
+
+    let candidate = format!("{base}.html");
     if used.insert(candidate.clone()) {
         return candidate;
     }
 
     // Collision — append numeric suffix
     for n in 1u32.. {
-        let candidate = format!("{}_{}.html", base, n);
+        let candidate = format!("{base}_{n}.html");
         if used.insert(candidate.clone()) {
             return candidate;
         }
     }
 
     unreachable!()
+}
+
+/// Decode percent-encoded strings (e.g. `%3A` → `:`).
+/// Handles UTF-8 sequences that span multiple percent-encoded bytes.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
+                16,
+            ) {
+                decoded.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| input.to_string())
 }
 
 /// Result of processing a single session file.
@@ -2665,25 +2724,50 @@ fn main() {
     for result in &results {
         match result {
             ProcessResult::Success(html, title, date, source) => {
-                let filename = unique_filename(title, &mut used_filenames);
+                let filename = unique_filename(
+                    title,
+                    if date.is_empty() { None } else { Some(date.as_str()) },
+                    &mut used_filenames,
+                );
                 let out_path = output_dir.join(&filename);
 
-                // Skip writing if the file already exists with identical content
-                let needs_write = match fs::read(&out_path) {
-                    Ok(existing) => existing != html.as_bytes(),
-                    Err(_) => true,
+                // Skip writing if the file already exists with identical content.
+                // Check file size first to avoid reading large files unnecessarily.
+                let needs_write = match fs::metadata(&out_path) {
+                    Ok(meta) if meta.len() == html.len() as u64 => {
+                        match fs::read(&out_path) {
+                            Ok(existing) => existing != html.as_bytes(),
+                            Err(_) => true,
+                        }
+                    }
+                    Ok(_) => true,  // size differs — must rewrite
+                    Err(_) => true, // file doesn't exist
                 };
 
                 if needs_write {
-                    match fs::write(&out_path, html) {
-                        Ok(_) => {
-                            eprintln!("  \u{2705} {}", out_path.display());
-                            index_entries.push((title.clone(), filename, date.clone()));
-                            files_written += 1;
+                    match fs::File::create(&out_path) {
+                        Ok(file) => {
+                            let mut writer = BufWriter::new(file);
+                            match writer.write_all(html.as_bytes()).and_then(|_| writer.flush()) {
+                                Ok(_) => {
+                                    eprintln!("  \u{2705} {}", out_path.display());
+                                    index_entries.push((title.clone(), filename, date.clone()));
+                                    files_written += 1;
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "  \u{274c} Failed to write {}: {}",
+                                        out_path.display(),
+                                        e
+                                    );
+                                    errors.push((source.clone(), format!("write failed: {}", e)));
+                                    files_errored += 1;
+                                }
+                            }
                         }
                         Err(e) => {
                             eprintln!(
-                                "  \u{274c} Failed to write {}: {}",
+                                "  \u{274c} Failed to create {}: {}",
                                 out_path.display(),
                                 e
                             );
@@ -2713,18 +2797,36 @@ fn main() {
     if !index_entries.is_empty() {
         let index_html = render_index(&index_entries);
         let index_path = output_dir.join("index.html");
-        let index_needs_write = match fs::read(&index_path) {
-            Ok(existing) => existing != index_html.as_bytes(),
+        let index_needs_write = match fs::metadata(&index_path) {
+            Ok(meta) if meta.len() == index_html.len() as u64 => {
+                match fs::read(&index_path) {
+                    Ok(existing) => existing != index_html.as_bytes(),
+                    Err(_) => true,
+                }
+            }
+            Ok(_) => true,
             Err(_) => true,
         };
         if index_needs_write {
-            match fs::write(&index_path, &index_html) {
-                Ok(_) => {
-                    eprintln!("  \u{2705} {}", index_path.display());
-                    index_written = true;
+            match fs::File::create(&index_path) {
+                Ok(file) => {
+                    let mut writer = BufWriter::new(file);
+                    match writer
+                        .write_all(index_html.as_bytes())
+                        .and_then(|_| writer.flush())
+                    {
+                        Ok(_) => {
+                            eprintln!("  \u{2705} {}", index_path.display());
+                            index_written = true;
+                        }
+                        Err(e) => {
+                            eprintln!("  \u{274c} Failed to write index: {}", e);
+                            files_errored += 1;
+                        }
+                    }
                 }
                 Err(e) => {
-                    eprintln!("  \u{274c} Failed to write index: {}", e);
+                    eprintln!("  \u{274c} Failed to create index: {}", e);
                     files_errored += 1;
                 }
             }
@@ -2867,8 +2969,8 @@ mod tests {
     #[test]
     fn test_unique_filename_no_collision() {
         let mut used = std::collections::HashSet::new();
-        let f1 = unique_filename("Session One", &mut used);
-        let f2 = unique_filename("Session Two", &mut used);
+        let f1 = unique_filename("Session One", None, &mut used);
+        let f2 = unique_filename("Session Two", None, &mut used);
         assert_eq!(f1, "Session_One.html");
         assert_eq!(f2, "Session_Two.html");
         assert_ne!(f1, f2);
@@ -2877,9 +2979,9 @@ mod tests {
     #[test]
     fn test_unique_filename_collision() {
         let mut used = std::collections::HashSet::new();
-        let f1 = unique_filename("Same Title", &mut used);
-        let f2 = unique_filename("Same Title", &mut used);
-        let f3 = unique_filename("Same Title", &mut used);
+        let f1 = unique_filename("Same Title", None, &mut used);
+        let f2 = unique_filename("Same Title", None, &mut used);
+        let f3 = unique_filename("Same Title", None, &mut used);
         assert_eq!(f1, "Same_Title.html");
         assert_eq!(f2, "Same_Title_1.html");
         assert_eq!(f3, "Same_Title_2.html");
@@ -2888,8 +2990,76 @@ mod tests {
     #[test]
     fn test_unique_filename_empty_title() {
         let mut used = std::collections::HashSet::new();
-        let f = unique_filename("", &mut used);
+        let f = unique_filename("", None, &mut used);
         assert_eq!(f, "untitled.html");
+    }
+
+    #[test]
+    fn test_unique_filename_with_date_prefix() {
+        let mut used = std::collections::HashSet::new();
+        let f = unique_filename("My Session", Some("2025-06-15T10:30:00Z"), &mut used);
+        assert_eq!(f, "2025-06-15_My_Session.html");
+    }
+
+    #[test]
+    fn test_unique_filename_date_prefix_collision() {
+        let mut used = std::collections::HashSet::new();
+        let f1 = unique_filename("Chat", Some("2025-06-15T10:00:00Z"), &mut used);
+        let f2 = unique_filename("Chat", Some("2025-06-15T14:00:00Z"), &mut used);
+        assert_eq!(f1, "2025-06-15_Chat.html");
+        assert_eq!(f2, "2025-06-15_Chat_1.html");
+    }
+
+    #[test]
+    fn test_unique_filename_invalid_date_no_prefix() {
+        let mut used = std::collections::HashSet::new();
+        let f = unique_filename("Session", Some("not-a-date"), &mut used);
+        assert_eq!(f, "Session.html");
+    }
+
+    #[test]
+    fn test_extract_date_prefix() {
+        assert_eq!(
+            extract_date_prefix("2025-06-15T10:30:00Z"),
+            Some("2025-06-15".to_string())
+        );
+        assert_eq!(
+            extract_date_prefix("2025-01-01"),
+            Some("2025-01-01".to_string())
+        );
+        assert_eq!(extract_date_prefix("not-a-date"), None);
+        assert_eq!(extract_date_prefix("short"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Percent decode tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_percent_decode_basic() {
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+        assert_eq!(percent_decode("%2Fhome%2Fuser"), "/home/user");
+    }
+
+    #[test]
+    fn test_percent_decode_windows_path() {
+        assert_eq!(
+            percent_decode("C%3A%5CUsers%5Ctest"),
+            "C:\\Users\\test"
+        );
+    }
+
+    #[test]
+    fn test_percent_decode_no_encoding() {
+        assert_eq!(percent_decode("/home/user/project"), "/home/user/project");
+    }
+
+    #[test]
+    fn test_percent_decode_mixed() {
+        assert_eq!(
+            percent_decode("/path/to%20my%20file.txt"),
+            "/path/to my file.txt"
+        );
     }
 
     #[test]
