@@ -649,10 +649,15 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
                 );
             }
             // Read / Glob / file_path / pattern  →  key: value
+            let display_val = if is_path_key(key) {
+                decode_path(s)
+            } else {
+                s.to_string()
+            };
             return format!(
                 "<div class=\"tool-args-kv\"><span class=\"tool-arg-key\">{}</span>: <code>{}</code></div>",
                 encode_text(key),
-                encode_text(s)
+                encode_text(&display_val)
             );
         }
     }
@@ -663,11 +668,12 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
         let old_str = obj.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
         let new_str = obj.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
         if !file_path.is_empty() && (!old_str.is_empty() || !new_str.is_empty()) {
+            let decoded_path = decode_path(file_path);
             let mut html = String::new();
             html.push_str("<div class=\"tool-args-kv-group\">");
             html.push_str(&format!(
                 "<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">file_path</span>: <code>{}</code></div>",
-                encode_text(file_path)
+                encode_text(&decoded_path)
             ));
             // Show replace_all flag if present and true
             if let Some(replace_all) = obj.get("replace_all").and_then(|v| v.as_bool()) {
@@ -702,18 +708,23 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
         for (key, val) in obj {
             let display = match val.as_str() {
                 Some(s) => {
+                    let display_val = if is_path_key(key) {
+                        decode_path(s)
+                    } else {
+                        s.to_string()
+                    };
                     // Long strings get a code block
-                    if s.contains('\n') || s.len() > 120 {
+                    if display_val.contains('\n') || display_val.len() > 120 {
                         format!(
                             "<div class=\"tool-arg-key\">{}</div><pre class=\"tool-args\"><code>{}</code></pre>",
                             encode_text(key),
-                            encode_text(s)
+                            encode_text(&display_val)
                         )
                     } else {
                         format!(
                             "<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">{}</span>: <code>{}</code></div>",
                             encode_text(key),
-                            encode_text(s)
+                            encode_text(&display_val)
                         )
                     }
                 }
@@ -1657,7 +1668,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         .or_else(|| source_path.and_then(file_modified_date))
         .unwrap_or_else(|| "Unknown date".to_string());
 
-    let workspace_decoded = percent_decode(&session.workspace_directory);
+    let workspace_decoded = decode_path(&session.workspace_directory);
     let workspace = if workspace_decoded.is_empty() {
         "N/A".to_string()
     } else {
@@ -2771,6 +2782,41 @@ fn unique_filename(
     unreachable!()
 }
 
+/// Returns true if a JSON key name represents a file/directory path,
+/// meaning its value should be percent-decoded for display.
+fn is_path_key(key: &str) -> bool {
+    matches!(
+        key,
+        "file_path"
+            | "filepath"
+            | "path"
+            | "file"
+            | "directory"
+            | "dir"
+            | "notebook_path"
+            | "cwd"
+    )
+}
+
+/// Decode a value for display: strips `file:///` URI prefixes and
+/// decodes percent-encoded bytes (e.g. `%3A` → `:`).
+fn decode_path(input: &str) -> String {
+    let rest = input.strip_prefix("file:///").unwrap_or(input);
+    let decoded = percent_decode(rest);
+    // After stripping file:/// and decoding, decide whether to re-add
+    // the leading slash.  file:///home/user → /home/user (Unix),
+    // file:///C:/Users → C:/Users (Windows drive letter).
+    if input.starts_with("file:///") {
+        if decoded.starts_with('/') || decoded.chars().nth(1) == Some(':') {
+            decoded
+        } else {
+            format!("/{decoded}")
+        }
+    } else {
+        decoded
+    }
+}
+
 /// Decode percent-encoded strings (e.g. `%3A` → `:`).
 /// Handles UTF-8 sequences that span multiple percent-encoded bytes.
 fn percent_decode(input: &str) -> String {
@@ -2933,7 +2979,11 @@ fn main() {
             } else {
                 session.title.clone()
             };
-            let date = session.date_created.clone().unwrap_or_default();
+            let date = session
+                .date_created
+                .clone()
+                .or_else(|| file_modified_date(file.as_path()))
+                .unwrap_or_default();
 
             ProcessResult::Success(html, title, date, file.clone())
         })
@@ -3399,6 +3449,31 @@ mod tests {
     }
 
     #[test]
+    fn test_is_path_key() {
+        assert!(is_path_key("file_path"));
+        assert!(is_path_key("filepath"));
+        assert!(is_path_key("path"));
+        assert!(is_path_key("directory"));
+        assert!(is_path_key("notebook_path"));
+        assert!(!is_path_key("pattern"));
+        assert!(!is_path_key("command"));
+        assert!(!is_path_key("old_string"));
+        assert!(!is_path_key("content"));
+    }
+
+    #[test]
+    fn test_decode_path_file_uri() {
+        // Unix file URI
+        assert_eq!(decode_path("file:///home/user/file.rs"), "/home/user/file.rs");
+        // Windows file URI
+        assert_eq!(decode_path("file:///C%3A/Users/test"), "C:/Users/test");
+        // Percent-encoded without file:/// prefix
+        assert_eq!(decode_path("C%3A%5CUsers%5Ctest"), r"C:\Users\test");
+        // Plain path — no change
+        assert_eq!(decode_path("/home/user/file.rs"), "/home/user/file.rs");
+    }
+
+    #[test]
     fn test_markdown_to_html() {
         let html = markdown_to_html("**bold** text");
         assert!(html.contains("<strong>bold</strong>"));
@@ -3607,6 +3682,83 @@ mod tests {
     fn test_render_tool_args_invalid_json() {
         let result = render_tool_args("Unknown", "not json at all");
         assert!(result.contains("not json at all"));
+    }
+
+    #[test]
+    fn test_render_tool_args_percent_decodes_file_paths() {
+        // Edit tool: file_path with percent-encoded colons (e.g. Windows C: drive)
+        let result = render_tool_args(
+            "Edit",
+            r#"{"file_path": "C%3A%5CUsers%5Ctest%5Cfile.rs", "old_string": "a", "new_string": "b"}"#,
+        );
+        assert!(
+            result.contains(r"C:\Users\test\file.rs"),
+            "Edit file_path should be percent-decoded: {}",
+            result
+        );
+        assert!(!result.contains("%3A"), "Should not contain encoded colons");
+
+        // Single-key (Read tool): file_path with percent-encoded colon
+        let result = render_tool_args(
+            "Read",
+            r#"{"file_path": "/home/user%3Aname/file.rs"}"#,
+        );
+        assert!(
+            result.contains("/home/user:name/file.rs"),
+            "Read file_path should be percent-decoded: {}",
+            result
+        );
+
+        // Multi-key: path key should be percent-decoded
+        let result = render_tool_args(
+            "Grep",
+            r#"{"pattern": "hello", "path": "/home/user%3Aname/project"}"#,
+        );
+        assert!(
+            result.contains("/home/user:name/project"),
+            "Multi-key path values should be percent-decoded: {}",
+            result
+        );
+
+        // Multi-key: non-path keys should NOT be decoded
+        let result = render_tool_args(
+            "Grep",
+            r#"{"pattern": "match%3Athis", "path": "/home/user/project"}"#,
+        );
+        assert!(
+            result.contains("match%3Athis"),
+            "Non-path keys should not be percent-decoded: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_render_tool_args_file_uri_stripped() {
+        // file:/// URI with percent-encoded path
+        let result = render_tool_args(
+            "Read",
+            r#"{"file_path": "file:///home/user%3Aname/file.rs"}"#,
+        );
+        assert!(
+            result.contains("/home/user:name/file.rs"),
+            "file:/// prefix should be stripped and path decoded: {}",
+            result
+        );
+        assert!(
+            !result.contains("file:///"),
+            "file:/// prefix should be removed"
+        );
+
+        // file:/// URI with Windows path
+        let result = render_tool_args(
+            "Edit",
+            r#"{"file_path": "file:///C%3A/Users/test/file.rs", "old_string": "a", "new_string": "b"}"#,
+        );
+        assert!(
+            result.contains("C:/Users/test/file.rs"),
+            "Windows file:/// URI should be decoded: {}",
+            result
+        );
     }
 
     // -----------------------------------------------------------------------
