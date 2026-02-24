@@ -649,10 +649,11 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
                 );
             }
             // Read / Glob / file_path / pattern  →  key: value
+            let display_val = percent_decode(s);
             return format!(
                 "<div class=\"tool-args-kv\"><span class=\"tool-arg-key\">{}</span>: <code>{}</code></div>",
                 encode_text(key),
-                encode_text(s)
+                encode_text(&display_val)
             );
         }
     }
@@ -663,11 +664,12 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
         let old_str = obj.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
         let new_str = obj.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
         if !file_path.is_empty() && (!old_str.is_empty() || !new_str.is_empty()) {
+            let decoded_path = percent_decode(file_path);
             let mut html = String::new();
             html.push_str("<div class=\"tool-args-kv-group\">");
             html.push_str(&format!(
                 "<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">file_path</span>: <code>{}</code></div>",
-                encode_text(file_path)
+                encode_text(&decoded_path)
             ));
             // Show replace_all flag if present and true
             if let Some(replace_all) = obj.get("replace_all").and_then(|v| v.as_bool()) {
@@ -702,18 +704,19 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
         for (key, val) in obj {
             let display = match val.as_str() {
                 Some(s) => {
+                    let decoded = percent_decode(s);
                     // Long strings get a code block
-                    if s.contains('\n') || s.len() > 120 {
+                    if decoded.contains('\n') || decoded.len() > 120 {
                         format!(
                             "<div class=\"tool-arg-key\">{}</div><pre class=\"tool-args\"><code>{}</code></pre>",
                             encode_text(key),
-                            encode_text(s)
+                            encode_text(&decoded)
                         )
                     } else {
                         format!(
                             "<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">{}</span>: <code>{}</code></div>",
                             encode_text(key),
-                            encode_text(s)
+                            encode_text(&decoded)
                         )
                     }
                 }
@@ -2933,7 +2936,11 @@ fn main() {
             } else {
                 session.title.clone()
             };
-            let date = session.date_created.clone().unwrap_or_default();
+            let date = session
+                .date_created
+                .clone()
+                .or_else(|| file_modified_date(file.as_path()))
+                .unwrap_or_default();
 
             ProcessResult::Success(html, title, date, file.clone())
         })
@@ -3607,6 +3614,43 @@ mod tests {
     fn test_render_tool_args_invalid_json() {
         let result = render_tool_args("Unknown", "not json at all");
         assert!(result.contains("not json at all"));
+    }
+
+    #[test]
+    fn test_render_tool_args_percent_decodes_file_paths() {
+        // Edit tool: file_path with percent-encoded colons (e.g. Windows C: drive)
+        let result = render_tool_args(
+            "Edit",
+            r#"{"file_path": "C%3A%5CUsers%5Ctest%5Cfile.rs", "old_string": "a", "new_string": "b"}"#,
+        );
+        assert!(
+            result.contains(r"C:\Users\test\file.rs"),
+            "Edit file_path should be percent-decoded: {}",
+            result
+        );
+        assert!(!result.contains("%3A"), "Should not contain encoded colons");
+
+        // Single-key (Read tool): file_path with percent-encoded colon
+        let result = render_tool_args(
+            "Read",
+            r#"{"file_path": "/home/user%3Aname/file.rs"}"#,
+        );
+        assert!(
+            result.contains("/home/user:name/file.rs"),
+            "Read file_path should be percent-decoded: {}",
+            result
+        );
+
+        // Multi-key: values should be percent-decoded
+        let result = render_tool_args(
+            "Grep",
+            r#"{"pattern": "hello", "path": "/home/user%3Aname/project"}"#,
+        );
+        assert!(
+            result.contains("/home/user:name/project"),
+            "Multi-key path values should be percent-decoded: {}",
+            result
+        );
     }
 
     // -----------------------------------------------------------------------
