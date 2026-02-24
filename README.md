@@ -13,7 +13,8 @@ Convert [continue.dev](https://continue.dev) session files to readable, self-con
 - **Tool calls nested under assistant messages** — tool calls and their results appear indented under the assistant message that invoked them
 - **Collapsible thinking & tool results** — thinking blocks and tool results start collapsed; expand on click
 - **System prompt at top** — the first system message is extracted and displayed in a collapsible section above the transcript
-- **Tools reference panel** — all tools used in the session are listed with descriptions (parsed from the system prompt)
+- **Detailed tools reference panel** — all tools used in the session are listed with full descriptions, parameters, and usage notes (parsed from the system prompt), each in its own collapsible section
+- **Token usage tracking** — per-message token counts (prompt + completion) with running cumulative totals and session-wide summary in the header (when usage data is available in the session)
 - Displays context items (attached files/code) in collapsible sections
 - Generates an `index.html` linking all processed sessions when given a directory
 - Optional title-based filtering with `--filter`
@@ -71,7 +72,7 @@ Install globally so the `continue-transcripts` command is always available:
 ```sh
 uv tool install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.3.0
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.4.0
 ```
 
 The `continue-transcripts` command is then available on your `PATH`.
@@ -81,7 +82,7 @@ To upgrade later (update the version in the URL):
 ```sh
 uv tool install --upgrade continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.3.0
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.4.0
 ```
 
 To uninstall:
@@ -98,7 +99,7 @@ Run without installing:
 uvx \
   --no-index \
   --from continue-transcripts \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.3.0 \
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.4.0 \
   continue-transcripts ./sessions
 ```
 
@@ -113,7 +114,7 @@ uv venv .venv
 source .venv/bin/activate
 uv pip install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.3.0
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.4.0
 ```
 
 ### Building from source
@@ -200,7 +201,8 @@ Continue stores data in `~/.continue/` on Linux and macOS (`%USERPROFILE%\.conti
 2. Reads and parses files in parallel using [rayon](https://crates.io/crates/rayon) (configurable thread count)
 3. For each session:
    - Extracts the system prompt (first `system` message) to a collapsible top section
-   - Collects tool descriptions from the system prompt for a reference panel
+   - Collects full tool descriptions from the system prompt and renders each tool as a collapsible reference panel with parameters and usage details
+   - Tracks token usage per message and calculates running cumulative totals
    - Groups assistant messages with their tool calls and tool results
    - Converts ANSI escape codes in tool output to styled HTML
    - Renders Markdown to HTML with syntax highlighting via [pulldown-cmark](https://crates.io/crates/pulldown-cmark) + [syntect](https://crates.io/crates/syntect)
