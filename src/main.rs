@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use syntect::highlighting::ThemeSet;
 use syntect::html::highlighted_html_for_string;
 use syntect::parsing::SyntaxSet;
@@ -29,6 +30,10 @@ struct Cli {
     /// Only process sessions whose title contains this string (case-insensitive)
     #[arg(long)]
     filter: Option<String>,
+
+    /// Number of parallel worker threads (defaults to number of CPU cores)
+    #[arg(short, long)]
+    workers: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,51 +1782,120 @@ fn discover_session_files(path: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Maximum length for the base filename (before `.html` extension).
+const MAX_FILENAME_LEN: usize = 60;
+
 fn sanitize_filename(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .collect::<String>()
+    let sanitized: String = s
         .chars()
-        .take(80)
-        .collect()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    // Trim trailing underscores after truncation for cleaner names
+    let truncated: String = sanitized.chars().take(MAX_FILENAME_LEN).collect();
+    truncated.trim_end_matches('_').to_string()
+}
+
+/// Generate a unique filename from a title, appending a numeric suffix if needed.
+/// The `used` set tracks filenames already claimed in this run.
+fn unique_filename(title: &str, used: &mut std::collections::HashSet<String>) -> String {
+    let base = sanitize_filename(title);
+    let base = if base.is_empty() {
+        "untitled".to_string()
+    } else {
+        base
+    };
+
+    let candidate = format!("{}.html", base);
+    if used.insert(candidate.clone()) {
+        return candidate;
+    }
+
+    // Collision — append numeric suffix
+    for n in 1u32.. {
+        let candidate = format!("{}_{}.html", base, n);
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+
+    unreachable!()
+}
+
+/// Result of processing a single session file.
+enum ProcessResult {
+    /// Successfully processed: (html, title, date, source_path)
+    Success(String, String, String, PathBuf),
+    /// Skipped (filtered out or empty history)
+    Skipped,
+    /// Failed to read or parse
+    Error(PathBuf, String),
 }
 
 fn main() {
     let cli = Cli::parse();
+    let start_time = Instant::now();
 
     let input = &cli.input;
     let output_dir = &cli.output;
 
     if !input.exists() {
-        eprintln!("Error: input path does not exist: {}", input.display());
+        eprintln!("\u{274c} Error: input path does not exist: {}", input.display());
         std::process::exit(1);
     }
 
+    // Configure rayon thread pool if --workers is specified
+    if let Some(workers) = cli.workers {
+        let workers = workers.max(1); // at least 1
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build_global()
+            .unwrap_or_else(|e| {
+                eprintln!("Warning: could not set thread pool size: {}", e);
+            });
+    }
+
+    let num_workers = rayon::current_num_threads();
+    eprintln!("Using {} worker thread(s)", num_workers);
+
     let files = discover_session_files(input);
     if files.is_empty() {
-        eprintln!("No session JSON files found at: {}", input.display());
+        eprintln!("\u{274c} No session JSON files found at: {}", input.display());
         std::process::exit(1);
     }
+
+    let files_discovered = files.len();
+    eprintln!("Discovered {} JSON file(s)", files_discovered);
 
     fs::create_dir_all(output_dir).expect("Failed to create output directory");
 
     // Process files in parallel: read, parse, filter, and render HTML concurrently
-    let results: Vec<_> = files
+    let results: Vec<ProcessResult> = files
         .par_iter()
-        .filter_map(|file| {
+        .map(|file| {
             let raw = match fs::read_to_string(file) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("Warning: could not read {}: {}", file.display(), e);
-                    return None;
+                    return ProcessResult::Error(
+                        file.clone(),
+                        format!("could not read: {}", e),
+                    );
                 }
             };
 
             let session: Session = match serde_json::from_str(&raw) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("Warning: could not parse {}: {}", file.display(), e);
-                    return None;
+                    return ProcessResult::Error(
+                        file.clone(),
+                        format!("could not parse: {}", e),
+                    );
                 }
             };
 
@@ -1832,12 +1906,12 @@ fn main() {
                     .to_lowercase()
                     .contains(&filter.to_lowercase())
                 {
-                    return None;
+                    return ProcessResult::Skipped;
                 }
             }
 
             if session.history.is_empty() {
-                return None;
+                return ProcessResult::Skipped;
             }
 
             let html = render_session(&session, Some(file.as_path()));
@@ -1847,36 +1921,101 @@ fn main() {
             } else {
                 session.title.clone()
             };
-            let filename = format!("{}.html", sanitize_filename(&title));
             let date = session.date_created.clone().unwrap_or_default();
 
-            Some((html, title, filename, date))
+            ProcessResult::Success(html, title, date, file.clone())
         })
         .collect();
 
     // Write output files and build the index
-    let mut index_entries: Vec<(String, String, String)> = Vec::new(); // (title, filename, date)
-    for (html, title, filename, date) in &results {
-        let out_path = output_dir.join(filename);
-        fs::write(&out_path, html).expect("Failed to write HTML file");
-        eprintln!("  Wrote: {}", out_path.display());
-        index_entries.push((title.clone(), filename.clone(), date.clone()));
+    let mut index_entries: Vec<(String, String, String)> = Vec::new();
+    let mut used_filenames = std::collections::HashSet::new();
+    let mut files_written = 0u32;
+    let mut files_skipped = 0u32;
+    let mut files_errored = 0u32;
+    let mut errors: Vec<(PathBuf, String)> = Vec::new();
+
+    for result in &results {
+        match result {
+            ProcessResult::Success(html, title, date, source) => {
+                let filename = unique_filename(title, &mut used_filenames);
+                let out_path = output_dir.join(&filename);
+                match fs::write(&out_path, html) {
+                    Ok(_) => {
+                        eprintln!("  \u{2705} {}", out_path.display());
+                        index_entries.push((title.clone(), filename, date.clone()));
+                        files_written += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("  \u{274c} Failed to write {}: {}", out_path.display(), e);
+                        errors.push((source.clone(), format!("write failed: {}", e)));
+                        files_errored += 1;
+                    }
+                }
+            }
+            ProcessResult::Skipped => {
+                files_skipped += 1;
+            }
+            ProcessResult::Error(path, msg) => {
+                eprintln!("  \u{274c} {}: {}", path.display(), msg);
+                errors.push((path.clone(), msg.clone()));
+                files_errored += 1;
+            }
+        }
     }
-    let processed = results.len();
 
     // Generate index.html
+    let mut index_written = false;
     if !index_entries.is_empty() {
         let index_html = render_index(&index_entries);
         let index_path = output_dir.join("index.html");
-        fs::write(&index_path, &index_html).expect("Failed to write index.html");
-        eprintln!("  Wrote: {}", index_path.display());
+        match fs::write(&index_path, &index_html) {
+            Ok(_) => {
+                eprintln!("  \u{2705} {}", index_path.display());
+                index_written = true;
+            }
+            Err(e) => {
+                eprintln!("  \u{274c} Failed to write index: {}", e);
+                files_errored += 1;
+            }
+        }
     }
 
+    let elapsed = start_time.elapsed();
+
+    // --- Summary ---
+    eprintln!();
+    eprintln!("═══════════════════════════════════════════");
+    eprintln!("  Summary");
+    eprintln!("═══════════════════════════════════════════");
+    eprintln!("  Files discovered:  {}", files_discovered);
     eprintln!(
-        "\nDone. Processed {} session(s) from {} file(s).",
-        processed,
-        files.len()
+        "  Sessions written:  {} (+ {} index)",
+        files_written,
+        if index_written { 1 } else { 0 }
     );
+    if files_skipped > 0 {
+        eprintln!("  Skipped:           {}", files_skipped);
+    }
+    if files_errored > 0 {
+        eprintln!("  Errors:            {}", files_errored);
+        for (path, msg) in &errors {
+            eprintln!("    \u{274c} {}: {}", path.display(), msg);
+        }
+    }
+    eprintln!("  Workers:           {}", num_workers);
+    eprintln!("  Elapsed:           {:.2?}", elapsed);
+    eprintln!("───────────────────────────────────────────");
+
+    if files_errored == 0 {
+        eprintln!("  \u{2705} All files processed successfully!");
+    } else {
+        eprintln!(
+            "  \u{274c} Completed with {} error(s)",
+            files_errored
+        );
+        std::process::exit(1);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1959,8 +2098,43 @@ mod tests {
 
     #[test]
     fn test_sanitize_filename() {
-        assert_eq!(sanitize_filename("Hello World!"), "Hello_World_");
+        assert_eq!(sanitize_filename("Hello World!"), "Hello_World");
         assert_eq!(sanitize_filename("test/file:name"), "test_file_name");
+    }
+
+    #[test]
+    fn test_sanitize_filename_truncation() {
+        let long_title = "A".repeat(100);
+        let result = sanitize_filename(&long_title);
+        assert_eq!(result.len(), MAX_FILENAME_LEN);
+    }
+
+    #[test]
+    fn test_unique_filename_no_collision() {
+        let mut used = std::collections::HashSet::new();
+        let f1 = unique_filename("Session One", &mut used);
+        let f2 = unique_filename("Session Two", &mut used);
+        assert_eq!(f1, "Session_One.html");
+        assert_eq!(f2, "Session_Two.html");
+        assert_ne!(f1, f2);
+    }
+
+    #[test]
+    fn test_unique_filename_collision() {
+        let mut used = std::collections::HashSet::new();
+        let f1 = unique_filename("Same Title", &mut used);
+        let f2 = unique_filename("Same Title", &mut used);
+        let f3 = unique_filename("Same Title", &mut used);
+        assert_eq!(f1, "Same_Title.html");
+        assert_eq!(f2, "Same_Title_1.html");
+        assert_eq!(f3, "Same_Title_2.html");
+    }
+
+    #[test]
+    fn test_unique_filename_empty_title() {
+        let mut used = std::collections::HashSet::new();
+        let f = unique_filename("", &mut used);
+        assert_eq!(f, "untitled.html");
     }
 
     #[test]

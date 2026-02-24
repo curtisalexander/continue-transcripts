@@ -21,7 +21,10 @@ system prompt, tool descriptions) only when needed.
 | 7. Tool descriptions reference | **Done** | `extract_tool_descriptions()` parses system prompt; `render_tools_reference()` shows grid panel |
 | 8. CSS updates | **Done** | New classes: `.system-prompt`, `.tools-reference`, `.assistant-tool-group`, `.tool-result-details`, `.tool-args-bare`, `.tool-args-kv`, etc. |
 | 9. JavaScript updates | **Done** | Expand/Collapse all toggle; truncation for `.tool-result-pre` |
-| 10. Tests | **Done** | 26 tests pass — ANSI, bare tool args, system prompt extraction, tool grouping, thinking collapsed, tool descriptions, rich fixture integration |
+| 10. Tests | **Done** | 30 tests pass — ANSI, bare tool args, system prompt extraction, tool grouping, thinking collapsed, tool descriptions, rich fixture integration, filename truncation/dedup |
+| 11. `--workers` CLI flag | **Done** | `--workers N` / `-w N` controls rayon thread pool size; defaults to CPU cores |
+| 12. Terminal summary | **Done** | Files discovered/written/skipped/errored, elapsed time, per-file status with check/X emoji, exit code 1 on errors |
+| 13. Filename truncation & dedup | **Done** | `sanitize_filename` truncates to 60 chars; `unique_filename` appends `_1`, `_2`, etc. on collision |
 
 ---
 
@@ -31,24 +34,8 @@ system prompt, tool descriptions) only when needed.
 2. **Sidebar vs inline reference:** Expandable section at the top (below system prompt, above transcript). Simpler and works on all screen sizes.
 3. **ANSI palette:** One Dark palette — matches the dark code theme well.
 4. **Hand-rolled ANSI parser:** Covers SGR sequences (colors, bold, italic, underline, dim, reset). No new dependency needed.
-
----
-
-## Remaining Work
-
-### 11. Performance improvements
-
-- Investigate if rayon parallelism can be further tuned (thread pool size, I/O batching)
-- Add a `--workers` CLI flag to let users control thread count
-- Consider parallel I/O for reading input files
-
-### 12. Terminal output summary
-
-- At the end of processing, print a summary with:
-  - Number of files read / written
-  - Success/failure status per file
-  - Visual indicators (green check / red X)
-  - Total elapsed time
+5. **Thread pool:** Rayon defaults to number of CPU cores. `--workers` allows override. Reading is I/O bound so more workers than cores can help on large directories.
+6. **Filename length:** Capped at 60 characters (before `.html` extension) for readability. Trailing underscores trimmed. Collisions get `_1`, `_2`, etc. suffix.
 
 ---
 
