@@ -34,7 +34,7 @@ cargo build --release
 # Or install as a Python tool via uv (recommended for end users)
 uv tool install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.4.0
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.7.0
 ```
 
 ### Running tests
@@ -94,13 +94,12 @@ Session JSON file
 
 ## Version management
 
-Versions must be kept in sync across three files:
+When asked to "bump version", update **all four** of these locations:
 
-1. `Cargo.toml` — `version = "X.Y.Z"` (Rust package)
-2. `pyproject.toml` — `version = "X.Y.Z"` (Python package)
+1. `Cargo.toml` — `version = "X.Y.Z"`
+2. `pyproject.toml` — `version = "X.Y.Z"`
 3. `python/continue_transcripts/__init__.py` — `__version__ = "X.Y.Z"`
-
-Also update the `--find-links` URLs in `README.md` that reference the release version.
+4. `README.md` — all `--find-links` URLs containing the release version (e.g. `expanded_assets/vX.Y.Z`)
 
 ## continue.dev session format
 
