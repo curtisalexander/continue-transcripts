@@ -63,6 +63,8 @@ struct ChatHistoryItem {
     context_items: Vec<ContextItem>,
     #[serde(default)]
     prompt_logs: Option<Vec<PromptLog>>,
+    #[serde(default)]
+    tool_call_states: Option<Vec<ToolCallState>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -72,6 +74,15 @@ struct PromptLog {
     model_title: String,
     #[serde(default)]
     completion_options: Option<CompletionOptions>,
+    /// The full system prompt text sent to the model.
+    #[serde(default)]
+    prompt: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    completion: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    model_provider: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -79,6 +90,63 @@ struct PromptLog {
 struct CompletionOptions {
     #[serde(default)]
     model: String,
+    #[serde(default)]
+    tools: Option<Vec<ToolDef>>,
+}
+
+// ---------------------------------------------------------------------------
+// Tool definitions (from toolCallStates and completionOptions.tools)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ToolCallState {
+    #[allow(dead_code)]
+    #[serde(default)]
+    tool_call_id: String,
+    #[serde(default)]
+    tool: Option<ToolDef>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ToolDef {
+    #[serde(default)]
+    function: Option<ToolFunction>,
+    #[serde(default)]
+    display_title: String,
+    #[serde(default)]
+    system_message_description: Option<SystemMessageDescription>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    group: String,
+    #[allow(dead_code)]
+    #[serde(default, rename = "type")]
+    tool_type: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ToolFunction {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    parameters: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SystemMessageDescription {
+    #[serde(default)]
+    prefix: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    example_args: Option<Vec<(String, serde_json::Value)>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -939,8 +1007,9 @@ fn collect_tool_names(history: &[ChatHistoryItem]) -> Vec<String> {
     names
 }
 
-/// Render the tools reference panel.
+/// Render the tools reference panel (legacy, text-parsed only).
 /// Each tool gets its own collapsible section with full details.
+#[allow(dead_code)]
 fn render_tools_reference(
     tool_names: &[String],
     tool_descriptions: &[(String, String, String)],
@@ -1037,6 +1106,290 @@ fn extract_model(session: &Session) -> Option<String> {
     None
 }
 
+/// Extract the system prompt from promptLogs (preferred) or fall back to
+/// the first system message in the history.
+fn extract_system_prompt(session: &Session) -> (String, Option<usize>) {
+    // Prefer promptLogs[].prompt — this is where continue.dev stores the
+    // full system prompt that was actually sent to the model.
+    for item in &session.history {
+        if let Some(logs) = &item.prompt_logs {
+            for log in logs {
+                if !log.prompt.is_empty() {
+                    return (log.prompt.clone(), None);
+                }
+            }
+        }
+    }
+
+    // Fallback: first system message in history
+    for (idx, item) in session.history.iter().enumerate() {
+        if item.message.role == "system" {
+            let text = item.message.content.text();
+            if !text.is_empty() {
+                return (text, Some(idx));
+            }
+        }
+    }
+
+    (String::new(), None)
+}
+
+/// Structured tool info extracted from toolCallStates or completionOptions.
+struct ExtractedTool {
+    name: String,
+    #[allow(dead_code)]
+    display_title: String,
+    description: String,
+    system_message_prefix: String,
+    parameters: Option<serde_json::Value>,
+}
+
+/// Extract tool definitions from toolCallStates[].tool across the session,
+/// falling back to completionOptions.tools in promptLogs.
+fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
+    let mut tools: Vec<ExtractedTool> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // First: collect from toolCallStates
+    for item in &session.history {
+        if let Some(states) = &item.tool_call_states {
+            for state in states {
+                if let Some(tool_def) = &state.tool {
+                    if let Some(func) = &tool_def.function {
+                        if !func.name.is_empty() && seen.insert(func.name.clone()) {
+                            tools.push(ExtractedTool {
+                                name: func.name.clone(),
+                                display_title: tool_def.display_title.clone(),
+                                description: func.description.clone(),
+                                system_message_prefix: tool_def
+                                    .system_message_description
+                                    .as_ref()
+                                    .map_or(String::new(), |s| s.prefix.clone()),
+                                parameters: func.parameters.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Second: collect from completionOptions.tools in promptLogs
+    for item in &session.history {
+        if let Some(logs) = &item.prompt_logs {
+            for log in logs {
+                if let Some(opts) = &log.completion_options {
+                    if let Some(opt_tools) = &opts.tools {
+                        for tool_def in opt_tools {
+                            if let Some(func) = &tool_def.function {
+                                if !func.name.is_empty() && seen.insert(func.name.clone()) {
+                                    tools.push(ExtractedTool {
+                                        name: func.name.clone(),
+                                        display_title: tool_def.display_title.clone(),
+                                        description: func.description.clone(),
+                                        system_message_prefix: tool_def
+                                            .system_message_description
+                                            .as_ref()
+                                            .map_or(String::new(), |s| s.prefix.clone()),
+                                        parameters: func.parameters.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    tools
+}
+
+/// Render tool info from structured ExtractedTool data (preferred over
+/// text-parsing from the system prompt).
+fn render_tools_reference_from_defs(
+    tool_names: &[String],
+    tool_defs: &[ExtractedTool],
+    text_descriptions: &[(String, String, String)],
+) -> String {
+    if tool_names.is_empty() {
+        return String::new();
+    }
+
+    // Build lookup from structured tool defs
+    let def_map: std::collections::HashMap<&str, &ExtractedTool> = tool_defs
+        .iter()
+        .map(|t| (t.name.as_str(), t))
+        .collect();
+
+    // Build fallback lookup from text-parsed descriptions
+    let text_short_map: std::collections::HashMap<&str, &str> = text_descriptions
+        .iter()
+        .map(|(name, short, _)| (name.as_str(), short.as_str()))
+        .collect();
+    let text_full_map: std::collections::HashMap<&str, &str> = text_descriptions
+        .iter()
+        .map(|(name, _, full)| (name.as_str(), full.as_str()))
+        .collect();
+
+    let mut html = String::new();
+    html.push_str("<details class=\"tools-reference\">\n");
+    html.push_str("  <summary>Tools Used (");
+    html.push_str(&tool_names.len().to_string());
+    html.push_str(")</summary>\n");
+    html.push_str("  <div class=\"tools-reference-content\">\n");
+
+    for name in tool_names {
+        if let Some(tool) = def_map.get(name.as_str()) {
+            // Use structured tool definition
+            let has_content = !tool.description.is_empty()
+                || !tool.system_message_prefix.is_empty()
+                || tool.parameters.is_some();
+
+            if has_content {
+                html.push_str("    <details class=\"tool-ref-item-details\">\n");
+                html.push_str(&format!(
+                    "      <summary class=\"tool-ref-item-summary\"><span class=\"tool-ref-name\">{}</span>",
+                    encode_text(name)
+                ));
+                // Short description: prefer systemMessageDescription.prefix, else first line of description
+                let short = if !tool.system_message_prefix.is_empty() {
+                    &tool.system_message_prefix
+                } else if !tool.description.is_empty() {
+                    tool.description.lines().next().unwrap_or("")
+                } else {
+                    ""
+                };
+                if !short.is_empty() {
+                    html.push_str(&format!(
+                        " <span class=\"tool-ref-short\">&mdash; {}</span>",
+                        encode_text(short)
+                    ));
+                }
+                html.push_str("</summary>\n");
+                html.push_str("      <div class=\"tool-ref-full\">\n");
+
+                // Full description
+                if !tool.description.is_empty() {
+                    html.push_str(&format!(
+                        "        {}\n",
+                        markdown_to_html(&tool.description)
+                    ));
+                }
+
+                // Parameters from JSON Schema
+                if let Some(params) = &tool.parameters {
+                    html.push_str(&render_parameters_schema(params));
+                }
+
+                html.push_str("      </div>\n");
+                html.push_str("    </details>\n");
+            } else {
+                // No content, simple item
+                html.push_str("    <div class=\"tool-ref-item\">\n");
+                html.push_str(&format!(
+                    "      <div class=\"tool-ref-name\">{}</div>\n",
+                    encode_text(name)
+                ));
+                html.push_str("    </div>\n");
+            }
+        } else {
+            // Fall back to text-parsed descriptions
+            let has_full = text_full_map
+                .get(name.as_str())
+                .is_some_and(|f| !f.is_empty());
+            if has_full {
+                html.push_str("    <details class=\"tool-ref-item-details\">\n");
+                html.push_str(&format!(
+                    "      <summary class=\"tool-ref-item-summary\"><span class=\"tool-ref-name\">{}</span>",
+                    encode_text(name)
+                ));
+                if let Some(short) = text_short_map.get(name.as_str()) {
+                    html.push_str(&format!(
+                        " <span class=\"tool-ref-short\">&mdash; {}</span>",
+                        encode_text(short)
+                    ));
+                }
+                html.push_str("</summary>\n");
+                html.push_str("      <div class=\"tool-ref-full\">\n");
+                if let Some(full) = text_full_map.get(name.as_str()) {
+                    html.push_str(&format!("        {}\n", markdown_to_html(full)));
+                }
+                html.push_str("      </div>\n");
+                html.push_str("    </details>\n");
+            } else {
+                html.push_str("    <div class=\"tool-ref-item\">\n");
+                html.push_str(&format!(
+                    "      <div class=\"tool-ref-name\">{}</div>\n",
+                    encode_text(name)
+                ));
+                if let Some(short) = text_short_map.get(name.as_str()) {
+                    html.push_str(&format!(
+                        "      <div class=\"tool-ref-desc\">{}</div>\n",
+                        encode_text(short)
+                    ));
+                }
+                html.push_str("    </div>\n");
+            }
+        }
+    }
+
+    html.push_str("  </div>\n");
+    html.push_str("</details>\n");
+    html
+}
+
+/// Render a JSON Schema parameters object as an HTML list.
+fn render_parameters_schema(params: &serde_json::Value) -> String {
+    let mut html = String::new();
+    if let Some(props) = params.get("properties").and_then(|p| p.as_object()) {
+        let required: Vec<&str> = params
+            .get("required")
+            .and_then(|r| r.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        html.push_str("        <div class=\"tool-params\">\n");
+        html.push_str(
+            "          <div class=\"tool-params-header\">Parameters</div>\n",
+        );
+        html.push_str("          <ul class=\"tool-params-list\">\n");
+        for (prop_name, prop_val) in props {
+            let type_str = prop_val
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("any");
+            let is_required = required.contains(&prop_name.as_str());
+            let req_label = if is_required { ", required" } else { "" };
+            let desc = prop_val
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("");
+            html.push_str(&format!(
+                "            <li><code>{}</code> <span class=\"tool-param-type\">({type_str}{req_label})</span>",
+                encode_text(prop_name)
+            ));
+            if !desc.is_empty() {
+                html.push_str(&format!(": {}", encode_text(desc)));
+            }
+            // Show enum values if present
+            if let Some(enum_vals) = prop_val.get("enum").and_then(|e| e.as_array()) {
+                let vals: Vec<String> = enum_vals
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| format!("<code>{}</code>", encode_text(s))))
+                    .collect();
+                if !vals.is_empty() {
+                    html.push_str(&format!(" [{}]", vals.join(", ")));
+                }
+            }
+            html.push_str("</li>\n");
+        }
+        html.push_str("          </ul>\n");
+        html.push_str("        </div>\n");
+    }
+    html
+}
+
 fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let title = if session.title.is_empty() {
         "Untitled Session"
@@ -1044,37 +1397,36 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         &session.title
     };
 
-    // --- Extract system prompt (first system message) ---
-    let mut system_prompt_html = String::new();
-    let mut system_prompt_content = String::new();
-    let mut system_prompt_idx: Option<usize> = None;
+    // --- Extract system prompt (prefer promptLogs, fallback to system message) ---
+    let (system_prompt_content, system_prompt_idx) = extract_system_prompt(session);
 
-    for (idx, item) in session.history.iter().enumerate() {
-        if item.message.role == "system" {
-            system_prompt_idx = Some(idx);
-            system_prompt_content = item.message.content.text();
-            break;
-        }
-    }
-
-    if !system_prompt_content.is_empty() {
-        system_prompt_html = format!(
+    let system_prompt_html = if !system_prompt_content.is_empty() {
+        format!(
             "<details class=\"system-prompt\">\n  \
                 <summary>System Prompt</summary>\n  \
                 <div class=\"system-prompt-content\">\n    {}\n  </div>\n\
              </details>\n",
             markdown_to_html(&system_prompt_content)
-        );
-    }
+        )
+    } else {
+        String::new()
+    };
 
     // --- Collect tool names and descriptions ---
     let tool_names = collect_tool_names(&session.history);
-    let tool_descriptions = if !system_prompt_content.is_empty() {
+
+    // Try structured tool definitions first (from toolCallStates / completionOptions)
+    let tool_defs = extract_tool_defs(session);
+
+    // Also parse text-based descriptions from system prompt as fallback
+    let text_descriptions = if !system_prompt_content.is_empty() {
         extract_tool_descriptions(&system_prompt_content)
     } else {
         Vec::new()
     };
-    let tools_reference_html = render_tools_reference(&tool_names, &tool_descriptions);
+
+    let tools_reference_html =
+        render_tools_reference_from_defs(&tool_names, &tool_defs, &text_descriptions);
 
     // --- Check if any messages have token usage data ---
     let has_any_usage = session.history.iter().any(|item| item.message.usage.is_some());
@@ -1717,6 +2069,39 @@ pre.highlighted-code {
   font-size: 0.82rem;
 }
 
+/* ----- Tool parameters (from JSON Schema) ----- */
+.tool-params {
+  margin-top: 0.5em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--border);
+}
+
+.tool-params-header {
+  font-weight: 600;
+  font-size: 0.82rem;
+  margin-bottom: 0.3em;
+  color: var(--text);
+}
+
+.tool-params-list {
+  margin: 0.2em 0 0.5em 1.5em;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.tool-params-list li { margin-bottom: 0.2em; }
+.tool-params-list code {
+  background: var(--inline-code-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+
+.tool-param-type {
+  color: var(--text-muted);
+  font-size: 0.8em;
+}
+
 /* ----- Tool calls ----- */
 .tool-call {
   background: var(--tool-call-bg);
@@ -2139,6 +2524,7 @@ fn main() {
     let mut index_entries: Vec<(String, String, String)> = Vec::new();
     let mut used_filenames = std::collections::HashSet::new();
     let mut files_written = 0u32;
+    let mut files_unchanged = 0u32;
     let mut files_skipped = 0u32;
     let mut files_errored = 0u32;
     let mut errors: Vec<(PathBuf, String)> = Vec::new();
@@ -2148,17 +2534,34 @@ fn main() {
             ProcessResult::Success(html, title, date, source) => {
                 let filename = unique_filename(title, &mut used_filenames);
                 let out_path = output_dir.join(&filename);
-                match fs::write(&out_path, html) {
-                    Ok(_) => {
-                        eprintln!("  \u{2705} {}", out_path.display());
-                        index_entries.push((title.clone(), filename, date.clone()));
-                        files_written += 1;
+
+                // Skip writing if the file already exists with identical content
+                let needs_write = match fs::read(&out_path) {
+                    Ok(existing) => existing != html.as_bytes(),
+                    Err(_) => true,
+                };
+
+                if needs_write {
+                    match fs::write(&out_path, html) {
+                        Ok(_) => {
+                            eprintln!("  \u{2705} {}", out_path.display());
+                            index_entries.push((title.clone(), filename, date.clone()));
+                            files_written += 1;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "  \u{274c} Failed to write {}: {}",
+                                out_path.display(),
+                                e
+                            );
+                            errors.push((source.clone(), format!("write failed: {}", e)));
+                            files_errored += 1;
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("  \u{274c} Failed to write {}: {}", out_path.display(), e);
-                        errors.push((source.clone(), format!("write failed: {}", e)));
-                        files_errored += 1;
-                    }
+                } else {
+                    // File exists and is unchanged — skip writing
+                    index_entries.push((title.clone(), filename, date.clone()));
+                    files_unchanged += 1;
                 }
             }
             ProcessResult::Skipped => {
@@ -2172,20 +2575,28 @@ fn main() {
         }
     }
 
-    // Generate index.html
+    // Generate index.html (also skip if unchanged)
     let mut index_written = false;
     if !index_entries.is_empty() {
         let index_html = render_index(&index_entries);
         let index_path = output_dir.join("index.html");
-        match fs::write(&index_path, &index_html) {
-            Ok(_) => {
-                eprintln!("  \u{2705} {}", index_path.display());
-                index_written = true;
+        let index_needs_write = match fs::read(&index_path) {
+            Ok(existing) => existing != index_html.as_bytes(),
+            Err(_) => true,
+        };
+        if index_needs_write {
+            match fs::write(&index_path, &index_html) {
+                Ok(_) => {
+                    eprintln!("  \u{2705} {}", index_path.display());
+                    index_written = true;
+                }
+                Err(e) => {
+                    eprintln!("  \u{274c} Failed to write index: {}", e);
+                    files_errored += 1;
+                }
             }
-            Err(e) => {
-                eprintln!("  \u{274c} Failed to write index: {}", e);
-                files_errored += 1;
-            }
+        } else {
+            index_written = true; // exists and unchanged
         }
     }
 
@@ -2202,6 +2613,9 @@ fn main() {
         files_written,
         if index_written { 1 } else { 0 }
     );
+    if files_unchanged > 0 {
+        eprintln!("  Unchanged:         {}", files_unchanged);
+    }
     if files_skipped > 0 {
         eprintln!("  Skipped:           {}", files_skipped);
     }
@@ -2431,6 +2845,7 @@ mod tests {
                 },
                 context_items: vec![],
                 prompt_logs: None,
+                tool_call_states: None,
             }],
             date_created: Some("2025-01-01".to_string()),
         };
@@ -2557,6 +2972,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -2567,6 +2983,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
@@ -2611,6 +3028,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -2621,6 +3039,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
@@ -2652,6 +3071,7 @@ mod tests {
             },
             context_items: vec![],
             prompt_logs: None,
+            tool_call_states: None,
         };
 
         let html = render_message(&item, None);
@@ -2703,6 +3123,7 @@ mod tests {
                 },
                 context_items: vec![],
                 prompt_logs: None,
+                tool_call_states: None,
             },
             ChatHistoryItem {
                 message: ChatMessage {
@@ -2720,6 +3141,7 @@ mod tests {
                 },
                 context_items: vec![],
                 prompt_logs: None,
+                tool_call_states: None,
             },
         ];
 
@@ -2774,6 +3196,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -2788,6 +3211,7 @@ mod tests {
                     },
                     context_items: vec![],
                     prompt_logs: None,
+                    tool_call_states: None,
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
@@ -2819,6 +3243,7 @@ mod tests {
                 },
                 context_items: vec![],
                 prompt_logs: None,
+                tool_call_states: None,
             }],
             date_created: Some("2025-01-01".to_string()),
         };
@@ -2863,5 +3288,223 @@ mod tests {
         let (name2, _short2, full2) = &descs[1];
         assert_eq!(name2, "Read");
         assert!(full2.contains("`file_path`"));
+    }
+
+    // -----------------------------------------------------------------------
+    // System prompt extraction from promptLogs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_system_prompt_from_prompt_logs() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let (prompt, idx) = extract_system_prompt(&session);
+        // Should extract from promptLogs[].prompt, not from a system message
+        assert!(!prompt.is_empty());
+        assert!(prompt.contains("expert software engineer"));
+        assert!(prompt.contains("investigate before making changes"));
+        // No system message index since it came from promptLogs
+        assert!(idx.is_none());
+    }
+
+    #[test]
+    fn test_system_prompt_fallback_to_system_message() {
+        // When there are no promptLogs with prompt, fall back to system message
+        let session = Session {
+            session_id: "fallback-test".to_string(),
+            title: "Fallback Test".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "system".to_string(),
+                        content: MessageContent::Text("You are a helpful assistant.".to_string()),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "user".to_string(),
+                        content: MessageContent::Text("Hello".to_string()),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let (prompt, idx) = extract_system_prompt(&session);
+        assert_eq!(prompt, "You are a helpful assistant.");
+        assert_eq!(idx, Some(0)); // index of the system message
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool definition extraction from toolCallStates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_tool_defs_from_tool_call_states() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let defs = extract_tool_defs(&session);
+        // Should find Bash and Read from toolCallStates
+        assert!(defs.iter().any(|t| t.name == "Bash"));
+        assert!(defs.iter().any(|t| t.name == "Read"));
+
+        // Check Bash has correct data
+        let bash = defs.iter().find(|t| t.name == "Bash").unwrap();
+        assert!(bash.description.contains("Execute a shell command"));
+        assert_eq!(bash.system_message_prefix, "Execute shell commands and return output");
+        assert!(bash.parameters.is_some());
+
+        // Check parameters have property descriptions
+        let params = bash.parameters.as_ref().unwrap();
+        let command_desc = params
+            .get("properties")
+            .and_then(|p| p.get("command"))
+            .and_then(|c| c.get("description"))
+            .and_then(|d| d.as_str());
+        assert_eq!(command_desc, Some("The shell command to execute"));
+    }
+
+    #[test]
+    fn test_extract_tool_defs_from_completion_options() {
+        // Tools from completionOptions.tools (in promptLogs) when no toolCallStates
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let defs = extract_tool_defs(&session);
+        // Grep and Edit are only in completionOptions.tools (not in toolCallStates)
+        // since they were available but not used via toolCallStates in this fixture
+        assert!(defs.iter().any(|t| t.name == "Grep"));
+        assert!(defs.iter().any(|t| t.name == "Edit"));
+
+        let grep = defs.iter().find(|t| t.name == "Grep").unwrap();
+        assert!(grep.description.contains("Search for patterns"));
+        assert!(grep.parameters.is_some());
+
+        // Grep has an enum parameter
+        let params = grep.parameters.as_ref().unwrap();
+        let output_mode = params
+            .get("properties")
+            .and_then(|p| p.get("output_mode"));
+        assert!(output_mode.is_some());
+        let enum_vals = output_mode.unwrap().get("enum");
+        assert!(enum_vals.is_some());
+    }
+
+    #[test]
+    fn test_extract_tool_defs_deduplicates() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let defs = extract_tool_defs(&session);
+        // Bash appears in multiple toolCallStates but should only be extracted once
+        let bash_count = defs.iter().filter(|t| t.name == "Bash").count();
+        assert_eq!(bash_count, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Render parameters from JSON Schema
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_parameters_schema() {
+        let schema: serde_json::Value = serde_json::from_str(r#"{
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute"
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Timeout in milliseconds"
+                }
+            },
+            "required": ["command"]
+        }"#).unwrap();
+
+        let html = render_parameters_schema(&schema);
+        assert!(html.contains("Parameters"));
+        assert!(html.contains("command"));
+        assert!(html.contains("string, required"));
+        assert!(html.contains("The shell command to execute"));
+        assert!(html.contains("timeout"));
+        assert!(html.contains("number"));
+        assert!(!html.contains("number, required")); // timeout is not required
+    }
+
+    #[test]
+    fn test_render_parameters_schema_with_enum() {
+        let schema: serde_json::Value = serde_json::from_str(r#"{
+            "type": "object",
+            "properties": {
+                "output_mode": {
+                    "type": "string",
+                    "description": "Output mode",
+                    "enum": ["content", "files_with_matches", "count"]
+                }
+            },
+            "required": []
+        }"#).unwrap();
+
+        let html = render_parameters_schema(&schema);
+        assert!(html.contains("output_mode"));
+        assert!(html.contains("content"));
+        assert!(html.contains("files_with_matches"));
+        assert!(html.contains("count"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Full integration: promptLogs fixture renders correctly
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_prompt_logs_fixture() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
+            .expect("prompt-logs fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        // System prompt from promptLogs should appear
+        assert!(html.contains("class=\"system-prompt\""));
+        assert!(html.contains("expert software engineer"));
+
+        // Tools reference panel should show structured tool info
+        assert!(html.contains("class=\"tools-reference\""));
+        assert!(html.contains("Bash"));
+        assert!(html.contains("Read"));
+
+        // Parameters should be rendered
+        assert!(html.contains("tool-params"));
+        assert!(html.contains("command"));
+        assert!(html.contains("file_path"));
+
+        // systemMessageDescription prefix should appear as short description
+        assert!(html.contains("Execute shell commands and return output"));
+
+        // Tool calls should appear
+        assert!(html.contains("tool-call-header"));
+
+        // Token usage should appear
+        assert!(html.contains("token-badge"));
+
+        // Model should be extracted from promptLogs
+        assert!(html.contains("Claude 3.5 Sonnet"));
     }
 }
