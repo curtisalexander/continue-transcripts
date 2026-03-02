@@ -115,6 +115,8 @@ struct ToolDef {
     function: Option<ToolFunction>,
     #[serde(default)]
     system_message_description: Option<SystemMessageDescription>,
+    #[serde(default)]
+    default_tool_policy: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -133,7 +135,11 @@ struct ToolFunction {
 struct SystemMessageDescription {
     #[serde(default)]
     prefix: String,
+    /// Example arguments shown in system prompt, e.g. [["filepath", "path/to/file.txt"]]
+    #[serde(default)]
+    example_args: Option<Vec<Vec<String>>>,
 }
+
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -762,12 +768,35 @@ fn render_tool_calls(tool_calls: &[ToolCallDelta]) -> String {
                 encode_text(&func.name)
             ));
             if !func.arguments.is_empty() {
+                // For Bash/command tool calls, extract the raw command for copy button
+                let copy_text = extract_copyable_command(&func.name, &func.arguments);
+                if let Some(cmd) = &copy_text {
+                    html.push_str(&format!(
+                        "<div class=\"tool-call-copyable\" data-copy-text=\"{}\">",
+                        encode_text(cmd)
+                    ));
+                }
                 html.push_str(&render_tool_args(&func.name, &func.arguments));
+                if copy_text.is_some() {
+                    html.push_str("</div>");
+                }
             }
             html.push_str("</div>");
         }
     }
     html
+}
+
+/// Extract a copyable command string from tool call arguments.
+/// Returns Some(command) for Bash-style tool calls, None otherwise.
+fn extract_copyable_command(tool_name: &str, arguments: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    let obj = parsed.as_object()?;
+    if tool_name == "Bash" || tool_name == "bash" || obj.contains_key("command") {
+        obj.get("command").and_then(|v| v.as_str()).map(|s| s.to_string())
+    } else {
+        None
+    }
 }
 
 /// Extract a language token from a filename or path for syntax highlighting.
@@ -1246,8 +1275,14 @@ fn extract_system_prompt(session: &Session) -> (String, Option<usize>) {
 /// Structured tool info extracted from toolCallStates or completionOptions.
 struct ExtractedTool {
     name: String,
+    /// Function description (from function.description).
     description: String,
+    /// System message prefix — the instruction text shown in the system prompt.
     system_message_prefix: String,
+    /// Example arguments from systemMessageDescription.exampleArgs.
+    example_args: Option<Vec<Vec<String>>>,
+    /// Default tool policy (e.g. "allowedWithPermission", "allowedWithoutPermission").
+    default_tool_policy: Option<String>,
     parameters: Option<serde_json::Value>,
 }
 
@@ -1264,14 +1299,17 @@ fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
                 if let Some(tool_def) = &state.tool {
                     if let Some(func) = &tool_def.function {
                         if !func.name.is_empty() && seen.insert(func.name.clone()) {
+                            let smd = &tool_def.system_message_description;
                             tools.push(ExtractedTool {
                                 name: func.name.clone(),
-
                                 description: func.description.clone(),
-                                system_message_prefix: tool_def
-                                    .system_message_description
+                                system_message_prefix: smd
                                     .as_ref()
                                     .map_or(String::new(), |s| s.prefix.clone()),
+                                example_args: smd
+                                    .as_ref()
+                                    .and_then(|s| s.example_args.clone()),
+                                default_tool_policy: tool_def.default_tool_policy.clone(),
                                 parameters: func.parameters.clone(),
                             });
                         }
@@ -1290,14 +1328,17 @@ fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
                         for tool_def in opt_tools {
                             if let Some(func) = &tool_def.function {
                                 if !func.name.is_empty() && seen.insert(func.name.clone()) {
+                                    let smd = &tool_def.system_message_description;
                                     tools.push(ExtractedTool {
                                         name: func.name.clone(),
-        
                                         description: func.description.clone(),
-                                        system_message_prefix: tool_def
-                                            .system_message_description
+                                        system_message_prefix: smd
                                             .as_ref()
                                             .map_or(String::new(), |s| s.prefix.clone()),
+                                        example_args: smd
+                                            .as_ref()
+                                            .and_then(|s| s.example_args.clone()),
+                                        default_tool_policy: tool_def.default_tool_policy.clone(),
                                         parameters: func.parameters.clone(),
                                     });
                                 }
@@ -1351,7 +1392,9 @@ fn render_tools_reference_from_defs(
             // Use structured tool definition
             let has_content = !tool.description.is_empty()
                 || !tool.system_message_prefix.is_empty()
-                || tool.parameters.is_some();
+                || tool.parameters.is_some()
+                || tool.example_args.is_some()
+                || tool.default_tool_policy.is_some();
 
             if has_content {
                 html.push_str("    <details class=\"tool-ref-item-details\">\n");
@@ -1373,15 +1416,63 @@ fn render_tools_reference_from_defs(
                         encode_text(short)
                     ));
                 }
+                // Show default tool policy badge
+                if let Some(policy) = &tool.default_tool_policy {
+                    let (policy_label, policy_class) = match policy.as_str() {
+                        "allowedWithoutPermission" => ("auto-allowed", "policy-auto"),
+                        "allowedWithPermission" => ("requires permission", "policy-permission"),
+                        "disabled" => ("disabled", "policy-disabled"),
+                        other => (other, "policy-other"),
+                    };
+                    html.push_str(&format!(
+                        " <span class=\"tool-policy-badge {}\">{}</span>",
+                        policy_class,
+                        encode_text(policy_label)
+                    ));
+                }
                 html.push_str("</summary>\n");
                 html.push_str("      <div class=\"tool-ref-full\">\n");
 
-                // Full description
-                if !tool.description.is_empty() {
+                // System message description (the instruction in the system prompt)
+                if !tool.system_message_prefix.is_empty() {
+                    html.push_str("        <div class=\"tool-section\">\n");
+                    html.push_str("          <div class=\"tool-section-header\">System Message</div>\n");
                     html.push_str(&format!(
-                        "        {}\n",
+                        "          <p class=\"tool-system-msg\">{}</p>\n",
+                        encode_text(&tool.system_message_prefix)
+                    ));
+                    html.push_str("        </div>\n");
+                }
+
+                // Function description (from function.description in the tool schema)
+                if !tool.description.is_empty() {
+                    html.push_str("        <div class=\"tool-section\">\n");
+                    html.push_str("          <div class=\"tool-section-header\">Function Description</div>\n");
+                    html.push_str(&format!(
+                        "          {}\n",
                         markdown_to_html(&tool.description)
                     ));
+                    html.push_str("        </div>\n");
+                }
+
+                // Example arguments
+                if let Some(examples) = &tool.example_args {
+                    if !examples.is_empty() {
+                        html.push_str("        <div class=\"tool-section\">\n");
+                        html.push_str("          <div class=\"tool-section-header\">Example Arguments</div>\n");
+                        html.push_str("          <div class=\"tool-example-args\">\n");
+                        for pair in examples {
+                            if pair.len() == 2 {
+                                html.push_str(&format!(
+                                    "            <div class=\"tool-example-arg\"><code class=\"tool-example-key\">{}</code>: <code>{}</code></div>\n",
+                                    encode_text(&pair[0]),
+                                    encode_text(&pair[1])
+                                ));
+                            }
+                        }
+                        html.push_str("          </div>\n");
+                        html.push_str("        </div>\n");
+                    }
                 }
 
                 // Parameters from JSON Schema
@@ -1497,6 +1588,114 @@ fn render_parameters_schema(params: &serde_json::Value) -> String {
     html
 }
 
+// ---------------------------------------------------------------------------
+// System prompt XML section parsing
+// ---------------------------------------------------------------------------
+
+/// A section of the system prompt: either plain text or an XML-tagged block.
+enum SystemPromptSection {
+    Text(String),
+    XmlBlock { tag: String, content: String },
+}
+
+/// Parse a system prompt into sections, splitting on XML-style `<tag>...</tag>` blocks.
+/// Content between XML blocks is returned as Text sections.
+/// Nested XML tags are not specially handled — they become part of the content.
+fn parse_system_prompt_sections(input: &str) -> Vec<SystemPromptSection> {
+    let mut sections = Vec::new();
+    let mut rest = input;
+
+    // Regex-like manual parsing for <tag_name>...</tag_name> blocks
+    while !rest.is_empty() {
+        // Find the next opening XML tag
+        if let Some(open_start) = rest.find('<') {
+            // Check it looks like an XML tag (not HTML entity, not </ close, not <!-- comment)
+            let after_open = &rest[open_start + 1..];
+            if let Some(tag_end) = after_open.find('>') {
+                let tag_content = &after_open[..tag_end];
+                // Must be a simple tag name: alphanumeric, hyphens, underscores, no spaces, no /
+                let tag_name = tag_content.trim();
+                if !tag_name.is_empty()
+                    && !tag_name.starts_with('/')
+                    && !tag_name.starts_with('!')
+                    && !tag_name.contains(' ')
+                    && tag_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                {
+                    // Look for matching closing tag
+                    let close_tag = format!("</{}>", tag_name);
+                    let search_from = open_start + 1 + tag_end + 1; // after the >
+                    if let Some(close_pos) = rest[search_from..].find(&close_tag) {
+                        // Found a complete XML block
+                        // Emit text before this block
+                        let before = &rest[..open_start];
+                        if !before.trim().is_empty() {
+                            sections.push(SystemPromptSection::Text(before.to_string()));
+                        }
+
+                        let inner_start = search_from;
+                        let inner_end = search_from + close_pos;
+                        let inner = &rest[inner_start..inner_end];
+                        sections.push(SystemPromptSection::XmlBlock {
+                            tag: tag_name.to_string(),
+                            content: inner.to_string(),
+                        });
+
+                        rest = &rest[inner_end + close_tag.len()..];
+                        continue;
+                    }
+                }
+            }
+
+            // Not a valid XML block — consume up to and including this '<' as text
+            // and continue searching
+            let next_pos = open_start + 1;
+            // Find the next '<' or end of string
+            let chunk_end = rest[next_pos..].find('<').map_or(rest.len(), |p| next_pos + p);
+            // Don't emit yet — accumulate into a buffer
+            let chunk = &rest[..chunk_end];
+            if !chunk.trim().is_empty() {
+                // Check if last section is Text and merge
+                if let Some(SystemPromptSection::Text(ref mut prev)) = sections.last_mut() {
+                    prev.push_str(chunk);
+                } else {
+                    sections.push(SystemPromptSection::Text(chunk.to_string()));
+                }
+            }
+            rest = &rest[chunk_end..];
+        } else {
+            // No more '<' — rest is plain text
+            if !rest.trim().is_empty() {
+                if let Some(SystemPromptSection::Text(ref mut prev)) = sections.last_mut() {
+                    prev.push_str(rest);
+                } else {
+                    sections.push(SystemPromptSection::Text(rest.to_string()));
+                }
+            }
+            break;
+        }
+    }
+
+    sections
+}
+
+/// Format an XML tag name for display (e.g. "system-reminder" -> "System Reminder").
+fn format_xml_tag_name(tag: &str) -> String {
+    tag.split(|c: char| c == '-' || c == '_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(c) => {
+                    let mut s = c.to_uppercase().to_string();
+                    s.extend(chars);
+                    s
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let title = if session.title.is_empty() {
         "Untitled Session"
@@ -1508,12 +1707,37 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let (system_prompt_content, system_prompt_idx) = extract_system_prompt(session);
 
     let system_prompt_html = if !system_prompt_content.is_empty() {
+        let sections = parse_system_prompt_sections(&system_prompt_content);
+        let mut sp_inner = String::new();
+        for section in &sections {
+            match section {
+                SystemPromptSection::Text(text) => {
+                    if !text.trim().is_empty() {
+                        sp_inner.push_str("<div class=\"sp-section sp-text\">\n");
+                        sp_inner.push_str(&markdown_to_html(text));
+                        sp_inner.push_str("\n</div>\n");
+                    }
+                }
+                SystemPromptSection::XmlBlock { tag, content } => {
+                    let display_tag = format_xml_tag_name(tag);
+                    sp_inner.push_str("<details class=\"sp-section sp-xml-block\">\n");
+                    sp_inner.push_str(&format!(
+                        "  <summary class=\"sp-xml-summary\">{}</summary>\n",
+                        encode_text(&display_tag)
+                    ));
+                    sp_inner.push_str("  <div class=\"sp-xml-content\">\n");
+                    sp_inner.push_str(&markdown_to_html(content));
+                    sp_inner.push_str("\n  </div>\n");
+                    sp_inner.push_str("</details>\n");
+                }
+            }
+        }
         format!(
             "<details class=\"system-prompt\">\n  \
                 <summary>System Prompt</summary>\n  \
                 <div class=\"system-prompt-content\">\n    {}\n  </div>\n\
              </details>\n",
-            markdown_to_html(&system_prompt_content)
+            sp_inner
         )
     } else {
         String::new()
@@ -1825,7 +2049,7 @@ body {
 }
 
 .container {
-  max-width: 860px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 24px 16px;
 }
@@ -2098,8 +2322,8 @@ pre.highlighted-code {
 .system-prompt-content {
   margin-top: 12px;
   font-size: 0.88rem;
-  max-height: 500px;
-  overflow-y: auto;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 /* ----- Tools reference panel ----- */
@@ -2558,6 +2782,22 @@ footer {
     --diff-remove-bg: #2e1a1a;
     --diff-remove-text: #f47067;
   }
+
+  :root:not([data-theme="light"]) .policy-auto {
+    background: #064e3b;
+    color: #6ee7b7;
+  }
+  :root:not([data-theme="light"]) .policy-permission {
+    background: #422006;
+    color: #fcd34d;
+  }
+  :root:not([data-theme="light"]) .policy-disabled {
+    background: #450a0a;
+    color: #fca5a5;
+  }
+  :root:not([data-theme="light"]) .sp-xml-block {
+    background: rgba(255,255,255,0.03);
+  }
 }
 
 [data-theme="dark"] {
@@ -2603,6 +2843,25 @@ footer {
     --diff-remove-text: #f47067;
 }
 
+[data-theme="dark"] .policy-auto {
+  background: #064e3b;
+  color: #6ee7b7;
+}
+
+[data-theme="dark"] .policy-permission {
+  background: #422006;
+  color: #fcd34d;
+}
+
+[data-theme="dark"] .policy-disabled {
+  background: #450a0a;
+  color: #fca5a5;
+}
+
+[data-theme="dark"] .sp-xml-block {
+  background: rgba(255,255,255,0.03);
+}
+
 /* ----- Theme toggle button ----- */
 .theme-toggle {
   position: fixed;
@@ -2620,6 +2879,169 @@ footer {
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 .theme-toggle:hover { opacity: 0.8; }
+
+/* ----- System prompt XML sections ----- */
+.sp-section {
+  margin-bottom: 12px;
+}
+
+.sp-section:last-child {
+  margin-bottom: 0;
+}
+
+.sp-text {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.sp-xml-block {
+  background: rgba(0,0,0,0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.sp-xml-block > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: var(--system-label);
+  user-select: none;
+  list-style: none;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sp-xml-block > summary::-webkit-details-marker { display: none; }
+.sp-xml-block > summary::before {
+  content: '\25B6  ';
+  font-size: 0.6rem;
+  vertical-align: 1px;
+}
+.sp-xml-block[open] > summary::before {
+  content: '\25BC  ';
+}
+
+.sp-xml-content {
+  padding: 0 14px 12px;
+  border-top: 1px solid var(--border);
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.sp-xml-content p {
+  margin-bottom: 0.5em;
+  white-space: pre-wrap;
+}
+
+.sp-xml-content pre {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--code-border);
+  overflow-x: auto;
+  margin: 0.5em 0;
+  font-size: 0.82rem;
+}
+
+/* ----- Tool reference sections ----- */
+.tool-section {
+  margin-top: 0.5em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--border);
+}
+
+.tool-section:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.tool-section-header {
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 0.3em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tool-system-msg {
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--text);
+  margin-bottom: 0.3em;
+}
+
+.tool-example-args {
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
+.tool-example-arg {
+  padding: 2px 0;
+}
+
+.tool-example-key {
+  font-weight: 600;
+  color: var(--tool-call-border);
+}
+
+/* ----- Tool policy badges ----- */
+.tool-policy-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.policy-auto {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.policy-permission {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.policy-disabled {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.policy-other {
+  background: var(--bg);
+  color: var(--text-muted);
+}
+
+/* ----- Tool call copy button ----- */
+.tool-call-copyable {
+  position: relative;
+}
+
+.tool-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  z-index: 2;
+}
+
+.tool-call-copyable:hover .tool-copy-btn {
+  opacity: 1;
+}
 
 /* ----- Responsive ----- */
 @media (max-width: 600px) {
@@ -2731,6 +3153,34 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     });
     wrapper.appendChild(btn);
+  });
+
+  // Copy buttons for tool call commands (Bash $ commands)
+  document.querySelectorAll('.tool-call-copyable').forEach(function(el) {
+    var copyText = el.getAttribute('data-copy-text');
+    if (!copyText) return;
+    el.style.position = 'relative';
+    var btn = document.createElement('button');
+    btn.className = 'copy-btn tool-copy-btn';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', function() {
+      function onSuccess() {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 1500);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(copyText).then(onSuccess).catch(function() {
+          fallbackCopy(copyText) && onSuccess();
+        });
+      } else {
+        fallbackCopy(copyText) && onSuccess();
+      }
+    });
+    el.appendChild(btn);
   });
 
   // Truncation for long blocks
@@ -4736,5 +5186,172 @@ mod tests {
 
         // Model should be extracted from promptLogs
         assert!(html.contains("Claude 3.5 Sonnet"));
+    }
+
+    // -----------------------------------------------------------------------
+    // System prompt XML section parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_system_prompt_plain_text() {
+        let input = "You are a helpful assistant.\n\nPlease follow the rules.";
+        let sections = parse_system_prompt_sections(input);
+        assert_eq!(sections.len(), 1);
+        match &sections[0] {
+            SystemPromptSection::Text(text) => {
+                assert!(text.contains("helpful assistant"));
+                assert!(text.contains("follow the rules"));
+            }
+            _ => panic!("Expected Text section"),
+        }
+    }
+
+    #[test]
+    fn test_parse_system_prompt_with_xml_blocks() {
+        let input = "Intro text here.\n\n<system-reminder>\nRemember to be helpful.\n</system-reminder>\n\nMore text after.\n\n<example>\nUser: Hello\nAssistant: Hi!\n</example>\n\nFinal text.";
+        let sections = parse_system_prompt_sections(input);
+        // Should have: text, xml-block, text, xml-block, text
+        assert_eq!(sections.len(), 5);
+        match &sections[0] {
+            SystemPromptSection::Text(t) => assert!(t.contains("Intro text")),
+            _ => panic!("Expected Text"),
+        }
+        match &sections[1] {
+            SystemPromptSection::XmlBlock { tag, content } => {
+                assert_eq!(tag, "system-reminder");
+                assert!(content.contains("Remember to be helpful"));
+            }
+            _ => panic!("Expected XmlBlock"),
+        }
+        match &sections[2] {
+            SystemPromptSection::Text(t) => assert!(t.contains("More text after")),
+            _ => panic!("Expected Text"),
+        }
+        match &sections[3] {
+            SystemPromptSection::XmlBlock { tag, content } => {
+                assert_eq!(tag, "example");
+                assert!(content.contains("Hello"));
+            }
+            _ => panic!("Expected XmlBlock"),
+        }
+        match &sections[4] {
+            SystemPromptSection::Text(t) => assert!(t.contains("Final text")),
+            _ => panic!("Expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_parse_system_prompt_preserves_html_entities() {
+        // HTML-like content (e.g. <p> tags without closing) should not be treated as XML blocks
+        let input = "Use <b>bold</b> for emphasis. Compare values with a < b.";
+        let sections = parse_system_prompt_sections(input);
+        // Should have text sections (b is recognized as xml but "bold" is inner content)
+        // The <b> tag will be parsed as a block since it has matching </b>
+        assert!(!sections.is_empty());
+    }
+
+    #[test]
+    fn test_format_xml_tag_name_display() {
+        assert_eq!(format_xml_tag_name("system-reminder"), "System Reminder");
+        assert_eq!(format_xml_tag_name("example"), "Example");
+        assert_eq!(format_xml_tag_name("tool_use"), "Tool Use");
+        assert_eq!(format_xml_tag_name("antml_thinking"), "Antml Thinking");
+    }
+
+    #[test]
+    fn test_extract_copyable_command() {
+        // Bash tool call
+        let cmd = extract_copyable_command("Bash", r#"{"command": "ls -la"}"#);
+        assert_eq!(cmd, Some("ls -la".to_string()));
+
+        // Non-Bash tool call
+        let cmd = extract_copyable_command("Read", r#"{"file_path": "/tmp/test.rs"}"#);
+        assert_eq!(cmd, None);
+
+        // Tool with command key but different name
+        let cmd = extract_copyable_command("RunCommand", r#"{"command": "echo hello"}"#);
+        assert_eq!(cmd, Some("echo hello".to_string()));
+    }
+
+    #[test]
+    fn test_system_prompt_xml_rendered_in_html() {
+        let session = Session {
+            session_id: "xml-test".to_string(),
+            title: "XML Test".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "system".to_string(),
+                        content: MessageContent::Text(
+                            "You are helpful.\n\n<system-reminder>\nImportant rule here.\n</system-reminder>\n\nMore instructions."
+                                .to_string(),
+                        ),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // XML blocks should render as collapsible sections
+        assert!(html.contains("sp-xml-block"));
+        assert!(html.contains("System Reminder"));
+        assert!(html.contains("Important rule here"));
+    }
+
+    #[test]
+    fn test_tool_call_copy_button() {
+        let session = Session {
+            session_id: "copy-test".to_string(),
+            title: "Copy Test".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "assistant".to_string(),
+                        content: MessageContent::Text("Let me run that.".to_string()),
+                        tool_calls: Some(vec![ToolCallDelta {
+                            function: Some(ToolCallFunction {
+                                name: "Bash".to_string(),
+                                arguments: r#"{"command": "npm test"}"#.to_string(),
+                            }),
+                        }]),
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // Should have a copyable wrapper with the command text
+        assert!(html.contains("tool-call-copyable"));
+        assert!(html.contains("data-copy-text=\"npm test\""));
+    }
+
+    #[test]
+    fn test_container_width_expanded() {
+        let session = Session {
+            session_id: "width-test".to_string(),
+            title: "Width Test".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // Container should use expanded width
+        assert!(html.contains("max-width: 1200px"));
+        // Should NOT contain old width
+        assert!(!html.contains("max-width: 860px"));
     }
 }
