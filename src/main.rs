@@ -1164,7 +1164,7 @@ fn file_modified_date(path: &Path) -> Option<String> {
     let meta = fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
     let dt: chrono::DateTime<chrono::Local> = modified.into();
-    Some(dt.format("%Y-%m-%d %H:%M").to_string())
+    Some(dt.format("%Y-%m-%dT%H:%M:%S").to_string())
 }
 
 /// Format a date string for human-readable display.
@@ -2634,6 +2634,17 @@ footer {
 // ---------------------------------------------------------------------------
 
 const JS: &str = r#"<script>
+function fallbackCopy(text) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch(e) {}
+  document.body.removeChild(ta);
+  return ok;
+}
 document.addEventListener('DOMContentLoaded', function() {
   // Theme toggle
   (function() {
@@ -2700,15 +2711,23 @@ document.addEventListener('DOMContentLoaded', function() {
     btn.className = 'copy-btn';
     btn.textContent = 'Copy';
     btn.addEventListener('click', function() {
-      var text = pre.textContent;
-      navigator.clipboard.writeText(text).then(function() {
+      var code = pre.querySelector('code');
+      var text = code ? code.textContent : pre.textContent;
+      function onSuccess() {
         btn.textContent = 'Copied!';
         btn.classList.add('copied');
         setTimeout(function() {
           btn.textContent = 'Copy';
           btn.classList.remove('copied');
         }, 1500);
-      });
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(onSuccess).catch(function() {
+          fallbackCopy(text) && onSuccess();
+        });
+      } else {
+        fallbackCopy(text) && onSuccess();
+      }
     });
     wrapper.appendChild(btn);
   });
@@ -3560,6 +3579,11 @@ mod tests {
         assert_eq!(
             extract_datetime_prefix("2025-01-01"),
             Some("2025-01-01".to_string())
+        );
+        // Format produced by file_modified_date fallback (no timezone)
+        assert_eq!(
+            extract_datetime_prefix("2025-06-15T10:30:00"),
+            Some("2025-06-15_1030".to_string())
         );
         assert_eq!(extract_datetime_prefix("not-a-date"), None);
         assert_eq!(extract_datetime_prefix("short"), None);
