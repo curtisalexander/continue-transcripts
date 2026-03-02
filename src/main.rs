@@ -3,6 +3,7 @@ use html_escape::encode_text;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser as MdParser, Tag, TagEnd};
 use rayon::prelude::*;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -2809,11 +2810,58 @@ fn discover_session_files(path: &Path) -> Vec<PathBuf> {
         // Recursively find .json files
         let pattern = format!("{}/**/*.json", path.display());
         for p in glob::glob(&pattern).expect("Failed to read glob pattern").flatten() {
+            // Skip sessions.json — it contains session metadata, not a session transcript
+            if p.file_name().map_or(false, |n| n == "sessions.json") {
+                continue;
+            }
             files.push(p);
         }
     }
     files.sort();
     files
+}
+
+/// Metadata entry from sessions.json.
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct SessionMeta {
+    #[serde(default)]
+    session_id: String,
+    /// dateCreated in sessions.json is a Unix timestamp (seconds since epoch).
+    #[serde(default)]
+    date_created: Option<f64>,
+}
+
+/// Load sessions.json from a directory and return a map of session_id → ISO 8601 date string.
+/// Returns an empty map if the file doesn't exist or can't be parsed.
+fn load_sessions_metadata(dir: &Path) -> HashMap<String, String> {
+    let meta_path = dir.join("sessions.json");
+    let raw = match fs::read_to_string(&meta_path) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+
+    let entries: Vec<SessionMeta> = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut map = HashMap::new();
+    for entry in entries {
+        if entry.session_id.is_empty() {
+            continue;
+        }
+        if let Some(ts) = entry.date_created {
+            let secs = ts as i64;
+            if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
+                map.insert(
+                    entry.session_id,
+                    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                );
+            }
+        }
+    }
+    map
 }
 
 /// Parse a date string (YYYY-MM-DD) into a chrono NaiveDate.
@@ -3088,6 +3136,13 @@ fn main() {
     let files_discovered = files.len();
     eprintln!("Discovered {} JSON file(s)", files_discovered);
 
+    // Load sessions.json metadata for date fallback (only when input is a directory)
+    let sessions_meta = if input.is_dir() {
+        load_sessions_metadata(input)
+    } else {
+        HashMap::new()
+    };
+
     fs::create_dir_all(output_dir).expect("Failed to create output directory");
 
     // Process files in parallel: read, parse, filter, and render HTML concurrently
@@ -3171,6 +3226,7 @@ fn main() {
             let date = session
                 .date_created
                 .clone()
+                .or_else(|| sessions_meta.get(&session.session_id).cloned())
                 .or_else(|| file_modified_date(file.as_path()))
                 .unwrap_or_default();
 
@@ -3257,6 +3313,10 @@ fn main() {
             }
         }
     }
+
+    // Sort index entries by date descending (newest first).
+    // Dates are ISO 8601 strings, so lexicographic sort works correctly.
+    index_entries.sort_by(|a, b| b.2.cmp(&a.2));
 
     // Generate index.html (also skip if unchanged)
     let mut index_written = false;
