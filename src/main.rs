@@ -1167,6 +1167,26 @@ fn file_modified_date(path: &Path) -> Option<String> {
     Some(dt.format("%Y-%m-%d %H:%M").to_string())
 }
 
+/// Format a date string for human-readable display.
+/// Converts ISO 8601 strings like "2025-06-15T10:30:00Z" into
+/// "Jun 15, 2025 at 10:30 AM". Falls back to the raw string if parsing fails.
+fn format_date_display(date: &str) -> String {
+    // Try RFC 3339
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date) {
+        return dt.format("%b %-d, %Y at %-I:%M %p").to_string();
+    }
+    // Try ISO-ish with T separator
+    if date.len() >= 19 && date.as_bytes().get(10) == Some(&b'T') {
+        // Try parsing as NaiveDateTime + optional trailing Z/offset
+        let naive_str = &date[..19];
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%dT%H:%M:%S") {
+            return ndt.format("%b %-d, %Y at %-I:%M %p").to_string();
+        }
+    }
+    // Already human-readable or plain date — return as-is
+    date.to_string()
+}
+
 /// Extract the model name from the session history.
 /// Looks through prompt logs for the first non-empty model title,
 /// falling back to the completion_options.model field.
@@ -1661,7 +1681,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let date_str = session
         .date_created
         .as_deref()
-        .map(|s| s.to_string())
+        .map(|s| format_date_display(s))
         .or_else(|| source_path.and_then(file_modified_date))
         .unwrap_or_else(|| "Unknown date".to_string());
 
@@ -1704,14 +1724,15 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
 </head>
 <body>
 <button class="theme-toggle" aria-label="Toggle theme"></button>
+<button class="back-to-top" aria-label="Back to top">&uarr;</button>
 <div class="container">
   <header class="session-header">
     <h1>{title}</h1>
     <div class="session-meta">
-      <span class="meta-item">Session: <code>{session_id}</code></span>
       <span class="meta-item">Date: {date}</span>{model_meta}
+      <span class="meta-item">{user_count} user &middot; {assistant_count} assistant messages</span>{tokens_meta}
       <span class="meta-item">Workspace: <code>{workspace}</code></span>
-      <span class="meta-item">{user_count} user messages &middot; {assistant_count} assistant messages</span>{tokens_meta}
+      <span class="meta-item">Session: <code>{session_id}</code></span>
     </div>
   </header>
 {system_prompt}
@@ -1792,6 +1813,8 @@ const CSS: &str = r#"<style>
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+html { scroll-behavior: smooth; }
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   background: var(--bg);
@@ -1813,12 +1836,14 @@ body {
   border-radius: 12px;
   padding: 24px;
   margin-bottom: 24px;
+  border-top: 3px solid var(--user-border);
 }
 
 .session-header h1 {
   font-size: 1.5rem;
   margin-bottom: 12px;
   color: var(--text);
+  line-height: 1.3;
 }
 
 .session-meta {
@@ -2423,12 +2448,69 @@ pre.highlighted-code {
   overflow-y: auto;
 }
 
+/* ----- Code block copy button ----- */
+.code-block-wrapper {
+  position: relative;
+}
+.copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 4px;
+  color: #94a3b8;
+  font-size: 0.7rem;
+  padding: 3px 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 2;
+  font-family: inherit;
+}
+.code-block-wrapper:hover .copy-btn,
+pre:hover + .copy-btn,
+.copy-btn:hover {
+  opacity: 1;
+}
+.copy-btn.copied {
+  color: #6ee7b7;
+  border-color: #6ee7b7;
+  opacity: 1;
+}
+
+/* ----- Back-to-top button ----- */
+.back-to-top {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 100;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--text-muted);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s;
+}
+.back-to-top:hover { opacity: 0.8; }
+.back-to-top.visible { display: flex; }
+
 /* ----- Footer ----- */
 footer {
   text-align: center;
   padding: 24px 0 8px;
   font-size: 0.8rem;
   color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
 }
 
 /* ----- Dark mode ----- */
@@ -2594,16 +2676,41 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   })();
 
-  // Add language labels to fenced code blocks
+  // Add language labels and copy buttons to fenced code blocks
   document.querySelectorAll('pre > code[class*="language-"]').forEach(function(el) {
+    var pre = el.parentElement;
     var lang = el.className.match(/language-(\S+)/);
     if (lang) {
       var label = document.createElement('div');
       label.textContent = lang[1];
       label.style.cssText = 'position:absolute;top:6px;right:10px;font-size:0.7rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;';
-      el.parentElement.style.position = 'relative';
-      el.parentElement.appendChild(label);
+      pre.style.position = 'relative';
+      pre.appendChild(label);
     }
+  });
+
+  // Copy buttons for all code blocks (fenced, highlighted, and tool-result)
+  document.querySelectorAll('.message-content pre, pre.highlighted-code').forEach(function(pre) {
+    var wrapper = document.createElement('div');
+    wrapper.className = 'code-block-wrapper';
+    pre.parentNode.insertBefore(wrapper, pre);
+    wrapper.appendChild(pre);
+
+    var btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', function() {
+      var text = pre.textContent;
+      navigator.clipboard.writeText(text).then(function() {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 1500);
+      });
+    });
+    wrapper.appendChild(btn);
   });
 
   // Truncation for long blocks
@@ -2650,6 +2757,21 @@ document.addEventListener('DOMContentLoaded', function() {
       });
       transcript.parentElement.insertBefore(toggleBtn, transcript);
     }
+  }
+
+  // Back-to-top button
+  var topBtn = document.querySelector('.back-to-top');
+  if (topBtn) {
+    window.addEventListener('scroll', function() {
+      if (window.scrollY > 400) {
+        topBtn.classList.add('visible');
+      } else {
+        topBtn.classList.remove('visible');
+      }
+    });
+    topBtn.addEventListener('click', function() {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
   }
 });
 </script>"#;
@@ -2719,21 +2841,49 @@ fn sanitize_filename(s: &str) -> String {
     truncated.trim_end_matches('_').to_string()
 }
 
-/// Extract a YYYY-MM-DD date prefix from a date string.
-/// Handles ISO 8601 (e.g. "2025-06-15T10:30:00Z") and plain date strings.
-fn extract_date_prefix(date: &str) -> Option<String> {
-    // Try to extract YYYY-MM-DD from the beginning of the string
+/// Extract a date/time prefix from a date string for use in filenames.
+/// Returns `YYYY-MM-DD_HHMM` when time is available (from ISO 8601 strings
+/// like "2025-06-15T10:30:00Z") or `YYYY-MM-DD` for plain date strings.
+fn extract_datetime_prefix(date: &str) -> Option<String> {
+    // Try full ISO 8601 datetime first — extract both date and time
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date) {
+        return Some(dt.format("%Y-%m-%d_%H%M").to_string());
+    }
+
+    // Try ISO-ish with 'T' separator (e.g. "2025-06-15T10:30:00Z" that
+    // isn't strict RFC 3339 — parse manually)
+    if date.len() >= 16 && date.as_bytes().get(10) == Some(&b'T') {
+        let date_part = &date[..10];
+        let time_part = &date[11..16];
+        // Validate date: YYYY-MM-DD
+        let dparts: Vec<&str> = date_part.split('-').collect();
+        if dparts.len() == 3
+            && dparts[0].len() == 4
+            && dparts[1].len() == 2
+            && dparts[2].len() == 2
+            && dparts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
+        {
+            // Validate time: HH:MM
+            let tparts: Vec<&str> = time_part.split(':').collect();
+            if tparts.len() == 2
+                && tparts[0].len() == 2
+                && tparts[1].len() == 2
+                && tparts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
+            {
+                return Some(format!("{}_{}{}", date_part, tparts[0], tparts[1]));
+            }
+        }
+    }
+
+    // Fall back to plain YYYY-MM-DD (no time component)
     if date.len() >= 10 {
         let prefix = &date[..10];
-        // Validate it looks like a date: YYYY-MM-DD
         let parts: Vec<&str> = prefix.split('-').collect();
         if parts.len() == 3
             && parts[0].len() == 4
             && parts[1].len() == 2
             && parts[2].len() == 2
-            && parts[0].chars().all(|c| c.is_ascii_digit())
-            && parts[1].chars().all(|c| c.is_ascii_digit())
-            && parts[2].chars().all(|c| c.is_ascii_digit())
+            && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
         {
             return Some(prefix.to_string());
         }
@@ -2743,7 +2893,8 @@ fn extract_date_prefix(date: &str) -> Option<String> {
 
 /// Generate a unique filename from a title and optional date, appending a
 /// numeric suffix if needed. When a date is available, the filename is
-/// prefixed with `YYYY-MM-DD_` for easy chronological sorting.
+/// prefixed with `YYYY-MM-DD_HHMM_` (or `YYYY-MM-DD_` when no time is
+/// available) for easy chronological sorting.
 /// The `used` set tracks filenames already claimed in this run.
 fn unique_filename(
     title: &str,
@@ -2758,7 +2909,7 @@ fn unique_filename(
     };
 
     // Prepend date prefix if available
-    let base = match date.and_then(extract_date_prefix) {
+    let base = match date.and_then(extract_datetime_prefix) {
         Some(prefix) => format!("{prefix}_{base}"),
         None => base,
     };
@@ -3358,19 +3509,35 @@ mod tests {
     }
 
     #[test]
-    fn test_unique_filename_with_date_prefix() {
+    fn test_unique_filename_with_datetime_prefix() {
         let mut used = std::collections::HashSet::new();
         let f = unique_filename("My Session", Some("2025-06-15T10:30:00Z"), &mut used);
+        assert_eq!(f, "2025-06-15_1030_My_Session.html");
+    }
+
+    #[test]
+    fn test_unique_filename_with_date_only_prefix() {
+        let mut used = std::collections::HashSet::new();
+        let f = unique_filename("My Session", Some("2025-06-15"), &mut used);
         assert_eq!(f, "2025-06-15_My_Session.html");
     }
 
     #[test]
-    fn test_unique_filename_date_prefix_collision() {
+    fn test_unique_filename_datetime_prefix_collision() {
         let mut used = std::collections::HashSet::new();
         let f1 = unique_filename("Chat", Some("2025-06-15T10:00:00Z"), &mut used);
         let f2 = unique_filename("Chat", Some("2025-06-15T14:00:00Z"), &mut used);
-        assert_eq!(f1, "2025-06-15_Chat.html");
-        assert_eq!(f2, "2025-06-15_Chat_1.html");
+        assert_eq!(f1, "2025-06-15_1000_Chat.html");
+        assert_eq!(f2, "2025-06-15_1400_Chat.html");
+    }
+
+    #[test]
+    fn test_unique_filename_same_datetime_collision() {
+        let mut used = std::collections::HashSet::new();
+        let f1 = unique_filename("Chat", Some("2025-06-15T10:00:00Z"), &mut used);
+        let f2 = unique_filename("Chat", Some("2025-06-15T10:00:00Z"), &mut used);
+        assert_eq!(f1, "2025-06-15_1000_Chat.html");
+        assert_eq!(f2, "2025-06-15_1000_Chat_1.html");
     }
 
     #[test]
@@ -3381,17 +3548,37 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_date_prefix() {
+    fn test_extract_datetime_prefix() {
         assert_eq!(
-            extract_date_prefix("2025-06-15T10:30:00Z"),
-            Some("2025-06-15".to_string())
+            extract_datetime_prefix("2025-06-15T10:30:00Z"),
+            Some("2025-06-15_1030".to_string())
         );
         assert_eq!(
-            extract_date_prefix("2025-01-01"),
+            extract_datetime_prefix("2025-06-15T10:30:00+00:00"),
+            Some("2025-06-15_1030".to_string())
+        );
+        assert_eq!(
+            extract_datetime_prefix("2025-01-01"),
             Some("2025-01-01".to_string())
         );
-        assert_eq!(extract_date_prefix("not-a-date"), None);
-        assert_eq!(extract_date_prefix("short"), None);
+        assert_eq!(extract_datetime_prefix("not-a-date"), None);
+        assert_eq!(extract_datetime_prefix("short"), None);
+    }
+
+    #[test]
+    fn test_format_date_display() {
+        assert_eq!(
+            format_date_display("2025-06-15T10:30:00Z"),
+            "Jun 15, 2025 at 10:30 AM"
+        );
+        assert_eq!(
+            format_date_display("2025-01-01"),
+            "2025-01-01"
+        );
+        assert_eq!(
+            format_date_display("not-a-date"),
+            "not-a-date"
+        );
     }
 
     // -----------------------------------------------------------------------
