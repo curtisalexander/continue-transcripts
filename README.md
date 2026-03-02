@@ -20,7 +20,7 @@ Convert [continue.dev](https://continue.dev) session files to readable, self-con
 - Optional title-based filtering with `--filter`
 - **Parallel processing** with configurable worker count (`--workers`)
 - **Terminal summary** — file counts, elapsed time, and per-file status indicators
-- **Date-prefixed filenames** — output files are named `YYYY-MM-DD_Title.html` for easy chronological sorting
+- **Date+time-prefixed filenames** — output files are named `YYYY-MM-DD_HHMM_Title.html` for easy chronological sorting (falls back to `YYYY-MM-DD_Title.html` when time is unavailable)
 - **Filename deduplication** — output filenames are truncated to 60 characters with automatic `_1`, `_2` suffixes on collision
 - Responsive design — works on desktop and mobile
 
@@ -45,8 +45,8 @@ Output looks like:
 ```
 Using 4 worker thread(s)
 Discovered 12 JSON file(s)
-  ✅ transcripts/2025-06-15_Fix_failing_tests_in_auth_module.html
-  ✅ transcripts/2025-06-14_Refactor_auth_module.html
+  ✅ transcripts/2025-06-15_1430_Fix_failing_tests_in_auth_module.html
+  ✅ transcripts/2025-06-14_0915_Refactor_auth_module.html
   ...
   ✅ transcripts/index.html
 
@@ -73,7 +73,7 @@ Install globally so the `continue-transcripts` command is always available:
 ```sh
 uv tool install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.8.0
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.9.0
 ```
 
 The `continue-transcripts` command is then available on your `PATH`.
@@ -83,7 +83,7 @@ To upgrade later (update the version in the URL):
 ```sh
 uv tool install --upgrade continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.8.0
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.9.0
 ```
 
 To uninstall:
@@ -100,7 +100,7 @@ Run without installing:
 uvx \
   --no-index \
   --from continue-transcripts \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.8.0 \
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.9.0 \
   continue-transcripts ./sessions
 ```
 
@@ -115,7 +115,7 @@ uv venv .venv
 source .venv/bin/activate
 uv pip install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.8.0
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.9.0
 ```
 
 ### Building from source
