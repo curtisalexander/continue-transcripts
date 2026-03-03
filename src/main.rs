@@ -3123,8 +3123,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
-  // Copy buttons for all code blocks (fenced, highlighted, and tool-result)
-  document.querySelectorAll('.message-content pre, pre.highlighted-code').forEach(function(pre) {
+  // Copy buttons for all code blocks (fenced, highlighted, tool-result, and context items)
+  document.querySelectorAll('.message-content pre, pre.highlighted-code, pre.tool-result-pre, pre.context-content').forEach(function(pre) {
     var wrapper = document.createElement('div');
     wrapper.className = 'code-block-wrapper';
     pre.parentNode.insertBefore(wrapper, pre);
