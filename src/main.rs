@@ -5358,6 +5358,335 @@ mod tests {
         assert!(html.contains("data-copy-text=\"npm test\""));
     }
 
+    // -----------------------------------------------------------------------
+    // Copy button coverage for all block types
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_copy_button_plain_text_tool_result() {
+        // A tool result with no syntax highlighting (unknown extension)
+        // should get class "tool-result-pre" so the copy button JS matches it.
+        let session = Session {
+            session_id: "copy-plain-tool".to_string(),
+            title: "Copy Plain Tool".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "assistant".to_string(),
+                        content: MessageContent::Text("Reading file.".to_string()),
+                        tool_calls: Some(vec![ToolCallDelta {
+                            function: Some(ToolCallFunction {
+                                name: "Read".to_string(),
+                                arguments: r#"{"file_path": "/tmp/data"}"#.to_string(),
+                            }),
+                        }]),
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "tool".to_string(),
+                        content: MessageContent::Text(
+                            "some plain text content here".to_string(),
+                        ),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // The tool result should be in a <pre class="tool-result-pre"> block
+        assert!(
+            html.contains("tool-result-pre"),
+            "plain text tool result should have tool-result-pre class"
+        );
+        assert!(
+            html.contains("<pre class=\"tool-result-pre\"><code>"),
+            "plain text tool result should render as <pre class=\"tool-result-pre\"><code>"
+        );
+    }
+
+    #[test]
+    fn test_copy_button_ansi_tool_result() {
+        // Terminal output with ANSI escape codes should get "tool-result-pre"
+        // class so the copy button JS matches it.
+        let session = Session {
+            session_id: "copy-ansi".to_string(),
+            title: "Copy ANSI".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "assistant".to_string(),
+                        content: MessageContent::Text("Running tests.".to_string()),
+                        tool_calls: Some(vec![ToolCallDelta {
+                            function: Some(ToolCallFunction {
+                                name: "Bash".to_string(),
+                                arguments: r#"{"command": "npm test"}"#.to_string(),
+                            }),
+                        }]),
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "tool".to_string(),
+                        content: MessageContent::Text(
+                            "\x1b[32m✓ pass\x1b[0m  \x1b[31m✕ fail\x1b[0m".to_string(),
+                        ),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        assert!(
+            html.contains("<pre class=\"tool-result-pre\"><code>"),
+            "ANSI tool result should render as <pre class=\"tool-result-pre\"><code>"
+        );
+        // Should contain converted ANSI spans, not raw escape codes
+        assert!(
+            html.contains("<span style="),
+            "ANSI codes should be converted to styled spans"
+        );
+    }
+
+    #[test]
+    fn test_copy_button_highlighted_tool_result() {
+        // A tool result for a file with a known extension should get both
+        // "highlighted-code" and "tool-result-pre" classes.
+        let session = Session {
+            session_id: "copy-hl-tool".to_string(),
+            title: "Copy HL Tool".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "assistant".to_string(),
+                        content: MessageContent::Text("Reading file.".to_string()),
+                        tool_calls: Some(vec![ToolCallDelta {
+                            function: Some(ToolCallFunction {
+                                name: "Read".to_string(),
+                                arguments: r#"{"file_path": "/tmp/app.rs"}"#.to_string(),
+                            }),
+                        }]),
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+                ChatHistoryItem {
+                    message: ChatMessage {
+                        role: "tool".to_string(),
+                        content: MessageContent::Text(
+                            "     1\tfn main() {\n     2\t    println!(\"hello\");\n     3\t}"
+                                .to_string(),
+                        ),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                    context_items: vec![],
+                    prompt_logs: None,
+                    tool_call_states: None,
+                },
+            ],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        assert!(
+            html.contains("highlighted-code tool-result-pre"),
+            "highlighted tool result should have both highlighted-code and tool-result-pre classes"
+        );
+    }
+
+    #[test]
+    fn test_copy_button_plain_text_context_item() {
+        // Context items with an unknown file extension should get
+        // class "context-content" so the copy button JS matches.
+        let session = Session {
+            session_id: "copy-ctx-plain".to_string(),
+            title: "Copy Ctx Plain".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![ChatHistoryItem {
+                message: ChatMessage {
+                    role: "user".to_string(),
+                    content: MessageContent::Text("Check this file".to_string()),
+                    tool_calls: None,
+                    usage: None,
+                },
+                context_items: vec![ContextItem {
+                    name: "notes".to_string(),
+                    description: "Plain notes".to_string(),
+                    content: "some plain text notes".to_string(),
+                }],
+                prompt_logs: None,
+                tool_call_states: None,
+            }],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        assert!(
+            html.contains("<pre class=\"context-content\"><code>"),
+            "plain text context item should render as <pre class=\"context-content\"><code>"
+        );
+    }
+
+    #[test]
+    fn test_copy_button_highlighted_context_item() {
+        // Context items with a known extension should get both
+        // "highlighted-code" and "context-content" classes.
+        let session = Session {
+            session_id: "copy-ctx-hl".to_string(),
+            title: "Copy Ctx HL".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![ChatHistoryItem {
+                message: ChatMessage {
+                    role: "user".to_string(),
+                    content: MessageContent::Text("Check this file".to_string()),
+                    tool_calls: None,
+                    usage: None,
+                },
+                context_items: vec![ContextItem {
+                    name: "src/app.py".to_string(),
+                    description: "Python source".to_string(),
+                    content: "import os\nprint('hello')".to_string(),
+                }],
+                prompt_logs: None,
+                tool_call_states: None,
+            }],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        assert!(
+            html.contains("highlighted-code context-content"),
+            "highlighted context item should have both highlighted-code and context-content classes"
+        );
+    }
+
+    #[test]
+    fn test_copy_button_fenced_code_block() {
+        // Markdown fenced code blocks inside message-content should have
+        // a <pre> that the JS selector ".message-content pre" matches.
+        // Syntect-highlighted blocks get class="highlighted-code"; unknown
+        // languages fall back to <code class="language-...">.
+        let session = Session {
+            session_id: "copy-fenced".to_string(),
+            title: "Copy Fenced".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![ChatHistoryItem {
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: MessageContent::Text(
+                        "Here is some code:\n```rust\nfn main() {}\n```".to_string(),
+                    ),
+                    tool_calls: None,
+                    usage: None,
+                },
+                context_items: vec![],
+                prompt_logs: None,
+                tool_call_states: None,
+            }],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // The code block should be inside a message-content div
+        assert!(
+            html.contains("message-content"),
+            "assistant message should have message-content class"
+        );
+        // Syntect highlights known languages → <pre class="highlighted-code">
+        // which lives inside the message-content div, matched by both
+        // ".message-content pre" and "pre.highlighted-code"
+        assert!(
+            html.contains("<pre class=\"highlighted-code\""),
+            "syntax-highlighted fenced code block should have highlighted-code class"
+        );
+    }
+
+    #[test]
+    fn test_copy_button_fenced_code_block_unknown_lang() {
+        // Fenced code blocks with an unknown language fall back to
+        // <pre><code class="language-..."> inside message-content,
+        // matched by ".message-content pre".
+        let session = Session {
+            session_id: "copy-fenced-unk".to_string(),
+            title: "Copy Fenced Unk".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![ChatHistoryItem {
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: MessageContent::Text(
+                        "Example:\n```xyzlang\nfoo bar\n```".to_string(),
+                    ),
+                    tool_calls: None,
+                    usage: None,
+                },
+                context_items: vec![],
+                prompt_logs: None,
+                tool_call_states: None,
+            }],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        assert!(
+            html.contains("message-content"),
+            "assistant message should have message-content class"
+        );
+        // Unknown language → plain <pre><code class="language-xyzlang">
+        assert!(
+            html.contains("language-xyzlang"),
+            "unknown-language fenced code block should have language-* class"
+        );
+    }
+
+    #[test]
+    fn test_copy_button_js_selector_covers_all_classes() {
+        // The JS querySelectorAll for copy buttons must include selectors
+        // for all block types: message-content pre, highlighted-code,
+        // tool-result-pre, and context-content.
+        let session = Session {
+            session_id: "selector-test".to_string(),
+            title: "Selector Test".to_string(),
+            workspace_directory: "/tmp".to_string(),
+            history: vec![],
+            date_created: Some("2025-01-01".to_string()),
+        };
+
+        let html = render_session(&session, None);
+        // Verify the JS selector string covers all needed classes
+        assert!(
+            html.contains(
+                "querySelectorAll('.message-content pre, pre.highlighted-code, pre.tool-result-pre, pre.context-content')"
+            ),
+            "JS copy button selector must cover message-content pre, highlighted-code, tool-result-pre, and context-content"
+        );
+    }
+
     #[test]
     fn test_container_width_expanded() {
         let session = Session {
