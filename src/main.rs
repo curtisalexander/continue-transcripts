@@ -1402,11 +1402,11 @@ fn render_tools_reference_from_defs(
                     "      <summary class=\"tool-ref-item-summary\"><span class=\"tool-ref-name\">{}</span>",
                     encode_text(name)
                 ));
-                // Short description: prefer systemMessageDescription.prefix, else first line of description
-                let short = if !tool.system_message_prefix.is_empty() {
-                    &tool.system_message_prefix
-                } else if !tool.description.is_empty() {
+                // Short description: prefer function description, else systemMessageDescription.prefix
+                let short = if !tool.description.is_empty() {
                     tool.description.lines().next().unwrap_or("")
+                } else if !tool.system_message_prefix.is_empty() {
+                    &tool.system_message_prefix
                 } else {
                     ""
                 };
@@ -1433,17 +1433,6 @@ fn render_tools_reference_from_defs(
                 html.push_str("</summary>\n");
                 html.push_str("      <div class=\"tool-ref-full\">\n");
 
-                // System message description (the instruction in the system prompt)
-                if !tool.system_message_prefix.is_empty() {
-                    html.push_str("        <div class=\"tool-section\">\n");
-                    html.push_str("          <div class=\"tool-section-header\">System Message</div>\n");
-                    html.push_str(&format!(
-                        "          <p class=\"tool-system-msg\">{}</p>\n",
-                        encode_text(&tool.system_message_prefix)
-                    ));
-                    html.push_str("        </div>\n");
-                }
-
                 // Function description (from function.description in the tool schema)
                 if !tool.description.is_empty() {
                     html.push_str("        <div class=\"tool-section\">\n");
@@ -1451,6 +1440,22 @@ fn render_tools_reference_from_defs(
                     html.push_str(&format!(
                         "          {}\n",
                         markdown_to_html(&tool.description)
+                    ));
+                    html.push_str("        </div>\n");
+                }
+
+                // Parameters from JSON Schema
+                if let Some(params) = &tool.parameters {
+                    html.push_str(&render_parameters_schema(params));
+                }
+
+                // System message description (the instruction in the system prompt)
+                if !tool.system_message_prefix.is_empty() {
+                    html.push_str("        <div class=\"tool-section\">\n");
+                    html.push_str("          <div class=\"tool-section-header\">System Message</div>\n");
+                    html.push_str(&format!(
+                        "          <p class=\"tool-system-msg\">{}</p>\n",
+                        encode_text(&tool.system_message_prefix)
                     ));
                     html.push_str("        </div>\n");
                 }
@@ -1473,11 +1478,6 @@ fn render_tools_reference_from_defs(
                         html.push_str("          </div>\n");
                         html.push_str("        </div>\n");
                     }
-                }
-
-                // Parameters from JSON Schema
-                if let Some(params) = &tool.parameters {
-                    html.push_str(&render_parameters_schema(params));
                 }
 
                 html.push_str("      </div>\n");
@@ -5175,7 +5175,7 @@ mod tests {
         assert!(html.contains("command"));
         assert!(html.contains("file_path"));
 
-        // systemMessageDescription prefix should appear as short description
+        // systemMessageDescription prefix should appear in tool reference
         assert!(html.contains("Execute shell commands and return output"));
 
         // Tool calls should appear
@@ -5186,6 +5186,26 @@ mod tests {
 
         // Model should be extracted from promptLogs
         assert!(html.contains("Claude 3.5 Sonnet"));
+
+        // Tool sections should appear in order: Function Description, Parameters, System Message
+        // Search within the tools-reference section (after the CSS which also contains class names)
+        let tools_ref_start = html.find("class=\"tools-reference\"").expect("tools-reference present");
+        let tools_html = &html[tools_ref_start..];
+        let func_desc_pos = tools_html.find("Function Description").expect("Function Description present");
+        let params_pos = tools_html.find("tool-params-header").expect("Parameters present");
+        let sys_msg_pos = tools_html.find("System Message").expect("System Message present");
+        assert!(
+            func_desc_pos < params_pos,
+            "Function Description should appear before Parameters"
+        );
+        assert!(
+            params_pos < sys_msg_pos,
+            "Parameters should appear before System Message"
+        );
+
+        // Summary line should use function description, not system message prefix
+        // The Bash tool's function description starts with "Execute a shell command"
+        assert!(html.contains("Execute a shell command"));
     }
 
     // -----------------------------------------------------------------------
