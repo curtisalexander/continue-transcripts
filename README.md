@@ -73,7 +73,7 @@ Install globally so the `continue-transcripts` command is always available:
 ```sh
 uv tool install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.13.1
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.14.0
 ```
 
 The `continue-transcripts` command is then available on your `PATH`.
@@ -83,7 +83,7 @@ To upgrade later (update the version in the URL):
 ```sh
 uv tool install --upgrade continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.13.1
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.14.0
 ```
 
 To uninstall:
@@ -100,7 +100,7 @@ Run without installing:
 uvx \
   --no-index \
   --from continue-transcripts \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.13.1 \
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.14.0 \
   continue-transcripts ./sessions
 ```
 
@@ -115,7 +115,7 @@ uv venv .venv
 source .venv/bin/activate
 uv pip install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.13.1
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.14.0
 ```
 
 ### Building from source

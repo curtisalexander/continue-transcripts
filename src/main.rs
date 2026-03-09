@@ -1190,10 +1190,10 @@ fn collect_tool_names(history: &[ChatHistoryItem]) -> Vec<String> {
     names
 }
 
-fn file_modified_date(path: &Path) -> Option<String> {
+fn file_created_date(path: &Path) -> Option<String> {
     let meta = fs::metadata(path).ok()?;
-    let modified = meta.modified().ok()?;
-    let dt: chrono::DateTime<chrono::Local> = modified.into();
+    let created = meta.created().ok()?;
+    let dt: chrono::DateTime<chrono::Local> = created.into();
     Some(dt.format("%Y-%m-%dT%H:%M:%S").to_string())
 }
 
@@ -1907,7 +1907,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         .date_created
         .as_deref()
         .map(|s| format_date_display(s))
-        .or_else(|| source_path.and_then(file_modified_date))
+        .or_else(|| source_path.and_then(file_created_date))
         .unwrap_or_else(|| "Unknown date".to_string());
 
     let workspace_decoded = decode_path(&session.workspace_directory);
@@ -3637,9 +3637,9 @@ fn main() {
                     .as_deref()
                     .and_then(parse_session_date)
                     .or_else(|| {
-                        // Fall back to file modification time
+                        // Fall back to file creation time
                         file.metadata().ok()
-                            .and_then(|m| m.modified().ok())
+                            .and_then(|m| m.created().ok())
                             .map(|t| {
                                 let dt: chrono::DateTime<chrono::Local> = t.into();
                                 dt.date_naive()
@@ -3677,7 +3677,7 @@ fn main() {
                 .date_created
                 .clone()
                 .or_else(|| sessions_meta.get(&session.session_id).cloned())
-                .or_else(|| file_modified_date(file.as_path()))
+                .or_else(|| file_created_date(file.as_path()))
                 .unwrap_or_default();
 
             ProcessResult::Success(html, title, date, file.clone())
@@ -4090,7 +4090,7 @@ mod tests {
             extract_datetime_prefix("2025-01-01"),
             Some("2025-01-01".to_string())
         );
-        // Format produced by file_modified_date fallback (no timezone)
+        // Format produced by file_created_date fallback (no timezone)
         assert_eq!(
             extract_datetime_prefix("2025-06-15T10:30:00"),
             Some("2025-06-15_1030".to_string())
