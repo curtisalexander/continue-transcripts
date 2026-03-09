@@ -44,6 +44,17 @@ cargo test
 ```
 
 Tests use fixture files in `tests/fixtures/`:
+
+### Linting and formatting
+
+Before committing, ensure clippy and rustfmt are clean:
+
+```sh
+cargo clippy
+cargo fmt --check
+```
+
+To auto-fix formatting: `cargo fmt`
 - `sample-session.json` — basic conversation
 - `sample-session-rich.json` — complex session with system prompt, tool calls, ANSI output, thinking blocks
 
