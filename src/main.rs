@@ -140,7 +140,6 @@ struct SystemMessageDescription {
     example_args: Option<Vec<Vec<String>>>,
 }
 
-
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ChatMessage {
@@ -297,9 +296,8 @@ fn highlight_code(lang: &str, code: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 fn markdown_to_html(md: &str) -> String {
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS;
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let parser = MdParser::new_ext(md, options);
 
     let mut html_output = String::new();
@@ -492,9 +490,15 @@ fn ansi_to_html(input: &str) -> String {
             // Find the terminating letter
             let start = i + 2;
             let mut end = start;
-            while end < len && bytes[end] != b'm' && bytes[end] != b'A' && bytes[end] != b'B'
-                && bytes[end] != b'C' && bytes[end] != b'D' && bytes[end] != b'H'
-                && bytes[end] != b'J' && bytes[end] != b'K'
+            while end < len
+                && bytes[end] != b'm'
+                && bytes[end] != b'A'
+                && bytes[end] != b'B'
+                && bytes[end] != b'C'
+                && bytes[end] != b'D'
+                && bytes[end] != b'H'
+                && bytes[end] != b'J'
+                && bytes[end] != b'K'
             {
                 end += 1;
             }
@@ -508,10 +512,8 @@ fn ansi_to_html(input: &str) -> String {
                 if params.is_empty() || params == "0" {
                     style.reset();
                 } else {
-                    let codes: Vec<u32> = params
-                        .split(';')
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
+                    let codes: Vec<u32> =
+                        params.split(';').filter_map(|s| s.parse().ok()).collect();
                     let mut ci = 0;
                     while ci < codes.len() {
                         match codes[ci] {
@@ -527,22 +529,18 @@ fn ansi_to_html(input: &str) -> String {
                             23 => style.italic = false,
                             24 => style.underline = false,
                             30..=37 => {
-                                style.fg =
-                                    Some(FG_COLORS[(codes[ci] - 30) as usize].to_string());
+                                style.fg = Some(FG_COLORS[(codes[ci] - 30) as usize].to_string());
                             }
                             39 => style.fg = None,
                             40..=47 => {
-                                style.bg =
-                                    Some(BG_COLORS[(codes[ci] - 40) as usize].to_string());
+                                style.bg = Some(BG_COLORS[(codes[ci] - 40) as usize].to_string());
                             }
                             49 => style.bg = None,
                             90..=97 => {
-                                style.fg =
-                                    Some(BRIGHT_FG[(codes[ci] - 90) as usize].to_string());
+                                style.fg = Some(BRIGHT_FG[(codes[ci] - 90) as usize].to_string());
                             }
                             100..=107 => {
-                                style.bg =
-                                    Some(BG_COLORS[(codes[ci] - 100) as usize].to_string());
+                                style.bg = Some(BG_COLORS[(codes[ci] - 100) as usize].to_string());
                             }
                             // 256-color: 38;5;N or 48;5;N — skip for now
                             38 | 48 => {
@@ -708,7 +706,9 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
     }
 
     // Multiple keys — render as key: value pairs
-    let all_simple = obj.values().all(|v| v.is_string() || v.is_number() || v.is_boolean());
+    let all_simple = obj
+        .values()
+        .all(|v| v.is_string() || v.is_number() || v.is_boolean());
     if all_simple && obj.len() <= 8 {
         let mut html = String::new();
         html.push_str("<div class=\"tool-args-kv-group\">");
@@ -793,7 +793,9 @@ fn extract_copyable_command(tool_name: &str, arguments: &str) -> Option<String> 
     let parsed: serde_json::Value = serde_json::from_str(arguments).ok()?;
     let obj = parsed.as_object()?;
     if tool_name == "Bash" || tool_name == "bash" || obj.contains_key("command") {
-        obj.get("command").and_then(|v| v.as_str()).map(|s| s.to_string())
+        obj.get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     } else {
         None
     }
@@ -1018,11 +1020,7 @@ fn render_message(
 /// `tool_name` is the name of the tool call this result responds to (if known).
 /// `tool_args` is the JSON arguments string from the corresponding tool call,
 /// used to infer file extensions for syntax highlighting.
-fn render_tool_result_inline(
-    item: &ChatHistoryItem,
-    tool_name: &str,
-    tool_args: &str,
-) -> String {
+fn render_tool_result_inline(item: &ChatHistoryItem, tool_name: &str, tool_args: &str) -> String {
     let raw_content = item.message.content.text();
     let content_text = decode_file_uris_in_text(&raw_content);
     let label = if tool_name.is_empty() {
@@ -1144,7 +1142,9 @@ fn extract_tool_descriptions(system_content: &str) -> Vec<(String, String, Strin
                 while i < lines.len() {
                     let next = lines[i].trim();
                     // Stop at next ### or ## header
-                    if next.starts_with("### ") || (next.starts_with("## ") && !next.starts_with("### ")) {
+                    if next.starts_with("### ")
+                        || (next.starts_with("## ") && !next.starts_with("### "))
+                    {
                         break;
                     }
                     desc_lines.push(lines[i]);
@@ -1190,10 +1190,10 @@ fn collect_tool_names(history: &[ChatHistoryItem]) -> Vec<String> {
     names
 }
 
-fn file_modified_date(path: &Path) -> Option<String> {
+fn file_created_date(path: &Path) -> Option<String> {
     let meta = fs::metadata(path).ok()?;
-    let modified = meta.modified().ok()?;
-    let dt: chrono::DateTime<chrono::Local> = modified.into();
+    let created = meta.created().ok()?;
+    let dt: chrono::DateTime<chrono::Local> = created.into();
     Some(dt.format("%Y-%m-%dT%H:%M:%S").to_string())
 }
 
@@ -1306,9 +1306,7 @@ fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
                                 system_message_prefix: smd
                                     .as_ref()
                                     .map_or(String::new(), |s| s.prefix.clone()),
-                                example_args: smd
-                                    .as_ref()
-                                    .and_then(|s| s.example_args.clone()),
+                                example_args: smd.as_ref().and_then(|s| s.example_args.clone()),
                                 default_tool_policy: tool_def.default_tool_policy.clone(),
                                 parameters: func.parameters.clone(),
                             });
@@ -1365,10 +1363,8 @@ fn render_tools_reference_from_defs(
     }
 
     // Build lookup from structured tool defs
-    let def_map: std::collections::HashMap<&str, &ExtractedTool> = tool_defs
-        .iter()
-        .map(|t| (t.name.as_str(), t))
-        .collect();
+    let def_map: std::collections::HashMap<&str, &ExtractedTool> =
+        tool_defs.iter().map(|t| (t.name.as_str(), t)).collect();
 
     // Build fallback lookup from text-parsed descriptions
     let text_short_map: std::collections::HashMap<&str, &str> = text_descriptions
@@ -1436,7 +1432,9 @@ fn render_tools_reference_from_defs(
                 // Function description (from function.description in the tool schema)
                 if !tool.description.is_empty() {
                     html.push_str("        <div class=\"tool-section\">\n");
-                    html.push_str("          <div class=\"tool-section-header\">Function Description</div>\n");
+                    html.push_str(
+                        "          <div class=\"tool-section-header\">Function Description</div>\n",
+                    );
                     html.push_str(&format!(
                         "          {}\n",
                         markdown_to_html(&tool.description)
@@ -1452,7 +1450,9 @@ fn render_tools_reference_from_defs(
                 // System message description (the instruction in the system prompt)
                 if !tool.system_message_prefix.is_empty() {
                     html.push_str("        <div class=\"tool-section\">\n");
-                    html.push_str("          <div class=\"tool-section-header\">System Message</div>\n");
+                    html.push_str(
+                        "          <div class=\"tool-section-header\">System Message</div>\n",
+                    );
                     html.push_str(&format!(
                         "          <p class=\"tool-system-msg\">{}</p>\n",
                         encode_text(&tool.system_message_prefix)
@@ -1548,9 +1548,7 @@ fn render_parameters_schema(params: &serde_json::Value) -> String {
             .unwrap_or_default();
 
         html.push_str("        <div class=\"tool-params\">\n");
-        html.push_str(
-            "          <div class=\"tool-params-header\">Parameters</div>\n",
-        );
+        html.push_str("          <div class=\"tool-params-header\">Parameters</div>\n");
         html.push_str("          <ul class=\"tool-params-list\">\n");
         for (prop_name, prop_val) in props {
             let type_str = prop_val
@@ -1574,7 +1572,10 @@ fn render_parameters_schema(params: &serde_json::Value) -> String {
             if let Some(enum_vals) = prop_val.get("enum").and_then(|e| e.as_array()) {
                 let vals: Vec<String> = enum_vals
                     .iter()
-                    .filter_map(|v| v.as_str().map(|s| format!("<code>{}</code>", encode_text(s))))
+                    .filter_map(|v| {
+                        v.as_str()
+                            .map(|s| format!("<code>{}</code>", encode_text(s)))
+                    })
                     .collect();
                 if !vals.is_empty() {
                     html.push_str(&format!(" [{}]", vals.join(", ")));
@@ -1619,7 +1620,9 @@ fn parse_system_prompt_sections(input: &str) -> Vec<SystemPromptSection> {
                     && !tag_name.starts_with('/')
                     && !tag_name.starts_with('!')
                     && !tag_name.contains(' ')
-                    && tag_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                    && tag_name
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
                 {
                     // Look for matching closing tag
                     let close_tag = format!("</{}>", tag_name);
@@ -1650,7 +1653,9 @@ fn parse_system_prompt_sections(input: &str) -> Vec<SystemPromptSection> {
             // and continue searching
             let next_pos = open_start + 1;
             // Find the next '<' or end of string
-            let chunk_end = rest[next_pos..].find('<').map_or(rest.len(), |p| next_pos + p);
+            let chunk_end = rest[next_pos..]
+                .find('<')
+                .map_or(rest.len(), |p| next_pos + p);
             // Don't emit yet — accumulate into a buffer
             let chunk = &rest[..chunk_end];
             if !chunk.trim().is_empty() {
@@ -1680,7 +1685,7 @@ fn parse_system_prompt_sections(input: &str) -> Vec<SystemPromptSection> {
 
 /// Format an XML tag name for display (e.g. "system-reminder" -> "System Reminder").
 fn format_xml_tag_name(tag: &str) -> String {
-    tag.split(|c: char| c == '-' || c == '_')
+    tag.split(['-', '_'])
         .map(|word| {
             let mut chars = word.chars();
             match chars.next() {
@@ -1760,7 +1765,10 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
         render_tools_reference_from_defs(&tool_names, &tool_defs, &text_descriptions);
 
     // --- Check if any messages have token usage data ---
-    let has_any_usage = session.history.iter().any(|item| item.message.usage.is_some());
+    let has_any_usage = session
+        .history
+        .iter()
+        .any(|item| item.message.usage.is_some());
 
     // --- Render messages with tool-call/tool-result grouping ---
     let mut messages_html = String::new();
@@ -1807,15 +1815,10 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
             }
             "assistant" => {
                 assistant_count += 1;
-                let mut msg_html =
-                    render_message(item, running, last_model.as_deref());
+                let mut msg_html = render_message(item, running, last_model.as_deref());
 
                 // Count how many tool calls this assistant message has
-                let call_count = item
-                    .message
-                    .tool_calls
-                    .as_ref()
-                    .map_or(0, |c| c.len());
+                let call_count = item.message.tool_calls.as_ref().map_or(0, |c| c.len());
 
                 if call_count > 0 {
                     // Collect tool call names and args for matching with results
@@ -1906,8 +1909,8 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let date_str = session
         .date_created
         .as_deref()
-        .map(|s| format_date_display(s))
-        .or_else(|| source_path.and_then(file_modified_date))
+        .map(format_date_display)
+        .or_else(|| source_path.and_then(file_created_date))
         .unwrap_or_else(|| "Unknown date".to_string());
 
     let workspace_decoded = decode_path(&session.workspace_directory);
@@ -3259,9 +3262,12 @@ fn discover_session_files(path: &Path) -> Vec<PathBuf> {
     if path.is_dir() {
         // Recursively find .json files
         let pattern = format!("{}/**/*.json", path.display());
-        for p in glob::glob(&pattern).expect("Failed to read glob pattern").flatten() {
+        for p in glob::glob(&pattern)
+            .expect("Failed to read glob pattern")
+            .flatten()
+        {
             // Skip sessions.json — it contains session metadata, not a session transcript
-            if p.file_name().map_or(false, |n| n == "sessions.json") {
+            if p.file_name().is_some_and(|n| n == "sessions.json") {
                 continue;
             }
             files.push(p);
@@ -3452,14 +3458,7 @@ fn unique_filename(
 fn is_path_key(key: &str) -> bool {
     matches!(
         key,
-        "file_path"
-            | "filepath"
-            | "path"
-            | "file"
-            | "directory"
-            | "dir"
-            | "notebook_path"
-            | "cwd"
+        "file_path" | "filepath" | "path" | "file" | "directory" | "dir" | "notebook_path" | "cwd"
     )
 }
 
@@ -3512,10 +3511,9 @@ fn percent_decode(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 decoded.push(byte);
                 i += 3;
                 continue;
@@ -3545,20 +3543,29 @@ fn main() {
     let output_dir = &cli.output;
 
     if !input.exists() {
-        eprintln!("\u{274c} Error: input path does not exist: {}", input.display());
+        eprintln!(
+            "\u{274c} Error: input path does not exist: {}",
+            input.display()
+        );
         std::process::exit(1);
     }
 
     // Validate date filters
     let since_date = cli.since.as_deref().map(|s| {
         parse_date_filter(s).unwrap_or_else(|| {
-            eprintln!("\u{274c} Invalid --since date: {:?} (expected YYYY-MM-DD)", s);
+            eprintln!(
+                "\u{274c} Invalid --since date: {:?} (expected YYYY-MM-DD)",
+                s
+            );
             std::process::exit(1);
         })
     });
     let before_date = cli.before.as_deref().map(|s| {
         parse_date_filter(s).unwrap_or_else(|| {
-            eprintln!("\u{274c} Invalid --before date: {:?} (expected YYYY-MM-DD)", s);
+            eprintln!(
+                "\u{274c} Invalid --before date: {:?} (expected YYYY-MM-DD)",
+                s
+            );
             std::process::exit(1);
         })
     });
@@ -3579,7 +3586,10 @@ fn main() {
 
     let files = discover_session_files(input);
     if files.is_empty() {
-        eprintln!("\u{274c} No session JSON files found at: {}", input.display());
+        eprintln!(
+            "\u{274c} No session JSON files found at: {}",
+            input.display()
+        );
         std::process::exit(1);
     }
 
@@ -3602,20 +3612,14 @@ fn main() {
             let raw = match fs::read_to_string(file) {
                 Ok(s) => s,
                 Err(e) => {
-                    return ProcessResult::Error(
-                        file.clone(),
-                        format!("could not read: {}", e),
-                    );
+                    return ProcessResult::Error(file.clone(), format!("could not read: {}", e));
                 }
             };
 
             let session: Session = match serde_json::from_str(&raw) {
                 Ok(s) => s,
                 Err(e) => {
-                    return ProcessResult::Error(
-                        file.clone(),
-                        format!("could not parse: {}", e),
-                    );
+                    return ProcessResult::Error(file.clone(), format!("could not parse: {}", e));
                 }
             };
 
@@ -3637,9 +3641,10 @@ fn main() {
                     .as_deref()
                     .and_then(parse_session_date)
                     .or_else(|| {
-                        // Fall back to file modification time
-                        file.metadata().ok()
-                            .and_then(|m| m.modified().ok())
+                        // Fall back to file creation time
+                        file.metadata()
+                            .ok()
+                            .and_then(|m| m.created().ok())
                             .map(|t| {
                                 let dt: chrono::DateTime<chrono::Local> = t.into();
                                 dt.date_naive()
@@ -3677,7 +3682,7 @@ fn main() {
                 .date_created
                 .clone()
                 .or_else(|| sessions_meta.get(&session.session_id).cloned())
-                .or_else(|| file_modified_date(file.as_path()))
+                .or_else(|| file_created_date(file.as_path()))
                 .unwrap_or_default();
 
             ProcessResult::Success(html, title, date, file.clone())
@@ -3698,7 +3703,11 @@ fn main() {
             ProcessResult::Success(html, title, date, source) => {
                 let filename = unique_filename(
                     title,
-                    if date.is_empty() { None } else { Some(date.as_str()) },
+                    if date.is_empty() {
+                        None
+                    } else {
+                        Some(date.as_str())
+                    },
                     &mut used_filenames,
                 );
                 let out_path = output_dir.join(&filename);
@@ -3706,12 +3715,10 @@ fn main() {
                 // Skip writing if the file already exists with identical content.
                 // Check file size first to avoid reading large files unnecessarily.
                 let needs_write = match fs::metadata(&out_path) {
-                    Ok(meta) if meta.len() == html.len() as u64 => {
-                        match fs::read(&out_path) {
-                            Ok(existing) => existing != html.as_bytes(),
-                            Err(_) => true,
-                        }
-                    }
+                    Ok(meta) if meta.len() == html.len() as u64 => match fs::read(&out_path) {
+                        Ok(existing) => existing != html.as_bytes(),
+                        Err(_) => true,
+                    },
                     Ok(_) => true,  // size differs — must rewrite
                     Err(_) => true, // file doesn't exist
                 };
@@ -3720,7 +3727,10 @@ fn main() {
                     match fs::File::create(&out_path) {
                         Ok(file) => {
                             let mut writer = BufWriter::new(file);
-                            match writer.write_all(html.as_bytes()).and_then(|_| writer.flush()) {
+                            match writer
+                                .write_all(html.as_bytes())
+                                .and_then(|_| writer.flush())
+                            {
                                 Ok(_) => {
                                     eprintln!("  \u{2705} {}", out_path.display());
                                     index_entries.push((title.clone(), filename, date.clone()));
@@ -3738,11 +3748,7 @@ fn main() {
                             }
                         }
                         Err(e) => {
-                            eprintln!(
-                                "  \u{274c} Failed to create {}: {}",
-                                out_path.display(),
-                                e
-                            );
+                            eprintln!("  \u{274c} Failed to create {}: {}", out_path.display(), e);
                             errors.push((source.clone(), format!("write failed: {}", e)));
                             files_errored += 1;
                         }
@@ -3774,12 +3780,10 @@ fn main() {
         let index_html = render_index(&index_entries);
         let index_path = output_dir.join("index.html");
         let index_needs_write = match fs::metadata(&index_path) {
-            Ok(meta) if meta.len() == index_html.len() as u64 => {
-                match fs::read(&index_path) {
-                    Ok(existing) => existing != index_html.as_bytes(),
-                    Err(_) => true,
-                }
-            }
+            Ok(meta) if meta.len() == index_html.len() as u64 => match fs::read(&index_path) {
+                Ok(existing) => existing != index_html.as_bytes(),
+                Err(_) => true,
+            },
             Ok(_) => true,
             Err(_) => true,
         };
@@ -3843,10 +3847,7 @@ fn main() {
     if files_errored == 0 {
         eprintln!("  \u{2705} All files processed successfully!");
     } else {
-        eprintln!(
-            "  \u{274c} Completed with {} error(s)",
-            files_errored
-        );
+        eprintln!("  \u{274c} Completed with {} error(s)", files_errored);
         std::process::exit(1);
     }
 }
@@ -4090,7 +4091,7 @@ mod tests {
             extract_datetime_prefix("2025-01-01"),
             Some("2025-01-01".to_string())
         );
-        // Format produced by file_modified_date fallback (no timezone)
+        // Format produced by file_created_date fallback (no timezone)
         assert_eq!(
             extract_datetime_prefix("2025-06-15T10:30:00"),
             Some("2025-06-15_1030".to_string())
@@ -4105,14 +4106,8 @@ mod tests {
             format_date_display("2025-06-15T10:30:00Z"),
             "Jun 15, 2025 at 10:30 AM"
         );
-        assert_eq!(
-            format_date_display("2025-01-01"),
-            "2025-01-01"
-        );
-        assert_eq!(
-            format_date_display("not-a-date"),
-            "not-a-date"
-        );
+        assert_eq!(format_date_display("2025-01-01"), "2025-01-01");
+        assert_eq!(format_date_display("not-a-date"), "not-a-date");
     }
 
     // -----------------------------------------------------------------------
@@ -4169,10 +4164,7 @@ mod tests {
 
     #[test]
     fn test_percent_decode_windows_path() {
-        assert_eq!(
-            percent_decode("C%3A%5CUsers%5Ctest"),
-            "C:\\Users\\test"
-        );
+        assert_eq!(percent_decode("C%3A%5CUsers%5Ctest"), "C:\\Users\\test");
     }
 
     #[test]
@@ -4204,7 +4196,10 @@ mod tests {
     #[test]
     fn test_decode_path_file_uri() {
         // Unix file URI
-        assert_eq!(decode_path("file:///home/user/file.rs"), "/home/user/file.rs");
+        assert_eq!(
+            decode_path("file:///home/user/file.rs"),
+            "/home/user/file.rs"
+        );
         // Windows file URI
         assert_eq!(decode_path("file:///C%3A/Users/test"), "C:/Users/test");
         // Percent-encoded without file:/// prefix
@@ -4233,10 +4228,7 @@ mod tests {
             "Read /home/user/file.rs done"
         );
         // No file URIs — unchanged
-        assert_eq!(
-            decode_file_uris_in_text("No URIs here"),
-            "No URIs here"
-        );
+        assert_eq!(decode_file_uris_in_text("No URIs here"), "No URIs here");
         // URI at end of string (no trailing space)
         assert_eq!(
             decode_file_uris_in_text("Edited file:///c%3A/Users/test.rs"),
@@ -4470,10 +4462,7 @@ mod tests {
         assert!(!result.contains("%3A"), "Should not contain encoded colons");
 
         // Single-key (Read tool): file_path with percent-encoded colon
-        let result = render_tool_args(
-            "Read",
-            r#"{"file_path": "/home/user%3Aname/file.rs"}"#,
-        );
+        let result = render_tool_args("Read", r#"{"file_path": "/home/user%3Aname/file.rs"}"#);
         assert!(
             result.contains("/home/user:name/file.rs"),
             "Read file_path should be percent-decoded: {}",
@@ -5046,7 +5035,10 @@ mod tests {
         // Check Bash has correct data
         let bash = defs.iter().find(|t| t.name == "Bash").unwrap();
         assert!(bash.description.contains("Execute a shell command"));
-        assert_eq!(bash.system_message_prefix, "Execute shell commands and return output");
+        assert_eq!(
+            bash.system_message_prefix,
+            "Execute shell commands and return output"
+        );
         assert!(bash.parameters.is_some());
 
         // Check parameters have property descriptions
@@ -5078,9 +5070,7 @@ mod tests {
 
         // Grep has an enum parameter
         let params = grep.parameters.as_ref().unwrap();
-        let output_mode = params
-            .get("properties")
-            .and_then(|p| p.get("output_mode"));
+        let output_mode = params.get("properties").and_then(|p| p.get("output_mode"));
         assert!(output_mode.is_some());
         let enum_vals = output_mode.unwrap().get("enum");
         assert!(enum_vals.is_some());
@@ -5104,7 +5094,8 @@ mod tests {
 
     #[test]
     fn test_render_parameters_schema() {
-        let schema: serde_json::Value = serde_json::from_str(r#"{
+        let schema: serde_json::Value = serde_json::from_str(
+            r#"{
             "type": "object",
             "properties": {
                 "command": {
@@ -5117,7 +5108,9 @@ mod tests {
                 }
             },
             "required": ["command"]
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let html = render_parameters_schema(&schema);
         assert!(html.contains("Parameters"));
@@ -5131,7 +5124,8 @@ mod tests {
 
     #[test]
     fn test_render_parameters_schema_with_enum() {
-        let schema: serde_json::Value = serde_json::from_str(r#"{
+        let schema: serde_json::Value = serde_json::from_str(
+            r#"{
             "type": "object",
             "properties": {
                 "output_mode": {
@@ -5141,7 +5135,9 @@ mod tests {
                 }
             },
             "required": []
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let html = render_parameters_schema(&schema);
         assert!(html.contains("output_mode"));
@@ -5189,11 +5185,19 @@ mod tests {
 
         // Tool sections should appear in order: Function Description, Parameters, System Message
         // Search within the tools-reference section (after the CSS which also contains class names)
-        let tools_ref_start = html.find("class=\"tools-reference\"").expect("tools-reference present");
+        let tools_ref_start = html
+            .find("class=\"tools-reference\"")
+            .expect("tools-reference present");
         let tools_html = &html[tools_ref_start..];
-        let func_desc_pos = tools_html.find("Function Description").expect("Function Description present");
-        let params_pos = tools_html.find("tool-params-header").expect("Parameters present");
-        let sys_msg_pos = tools_html.find("System Message").expect("System Message present");
+        let func_desc_pos = tools_html
+            .find("Function Description")
+            .expect("Function Description present");
+        let params_pos = tools_html
+            .find("tool-params-header")
+            .expect("Parameters present");
+        let sys_msg_pos = tools_html
+            .find("System Message")
+            .expect("System Message present");
         assert!(
             func_desc_pos < params_pos,
             "Function Description should appear before Parameters"
@@ -5331,24 +5335,22 @@ mod tests {
             session_id: "copy-test".to_string(),
             title: "Copy Test".to_string(),
             workspace_directory: "/tmp".to_string(),
-            history: vec![
-                ChatHistoryItem {
-                    message: ChatMessage {
-                        role: "assistant".to_string(),
-                        content: MessageContent::Text("Let me run that.".to_string()),
-                        tool_calls: Some(vec![ToolCallDelta {
-                            function: Some(ToolCallFunction {
-                                name: "Bash".to_string(),
-                                arguments: r#"{"command": "npm test"}"#.to_string(),
-                            }),
-                        }]),
-                        usage: None,
-                    },
-                    context_items: vec![],
-                    prompt_logs: None,
-                    tool_call_states: None,
+            history: vec![ChatHistoryItem {
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: MessageContent::Text("Let me run that.".to_string()),
+                    tool_calls: Some(vec![ToolCallDelta {
+                        function: Some(ToolCallFunction {
+                            name: "Bash".to_string(),
+                            arguments: r#"{"command": "npm test"}"#.to_string(),
+                        }),
+                    }]),
+                    usage: None,
                 },
-            ],
+                context_items: vec![],
+                prompt_logs: None,
+                tool_call_states: None,
+            }],
             date_created: Some("2025-01-01".to_string()),
         };
 
@@ -5390,9 +5392,7 @@ mod tests {
                 ChatHistoryItem {
                     message: ChatMessage {
                         role: "tool".to_string(),
-                        content: MessageContent::Text(
-                            "some plain text content here".to_string(),
-                        ),
+                        content: MessageContent::Text("some plain text content here".to_string()),
                         tool_calls: None,
                         usage: None,
                     },
@@ -5639,9 +5639,7 @@ mod tests {
             history: vec![ChatHistoryItem {
                 message: ChatMessage {
                     role: "assistant".to_string(),
-                    content: MessageContent::Text(
-                        "Example:\n```xyzlang\nfoo bar\n```".to_string(),
-                    ),
+                    content: MessageContent::Text("Example:\n```xyzlang\nfoo bar\n```".to_string()),
                     tool_calls: None,
                     usage: None,
                 },
