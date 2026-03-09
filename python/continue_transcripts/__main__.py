@@ -7,7 +7,11 @@ import sys
 
 
 def _run():
-    name = "continue-transcripts.exe" if sys.platform == "win32" else "continue-transcripts"
+    name = (
+        "continue-transcripts.exe"
+        if sys.platform == "win32"
+        else "continue-transcripts"
+    )
     binary = shutil.which(name)
     if binary is None:
         print(f"Error: could not find '{name}' on PATH.", file=sys.stderr)
