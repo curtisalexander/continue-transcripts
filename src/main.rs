@@ -565,15 +565,51 @@ fn ansi_to_html(input: &str) -> String {
             continue;
         }
 
-        // Regular character — HTML-escape it
-        match bytes[i] {
-            b'<' => out.push_str("&lt;"),
-            b'>' => out.push_str("&gt;"),
-            b'&' => out.push_str("&amp;"),
-            b'"' => out.push_str("&quot;"),
-            _ => out.push(bytes[i] as char),
+        // Regular character — HTML-escape it.
+        // Handle multi-byte UTF-8 sequences correctly: determine the
+        // byte length from the leading byte, slice the full sequence,
+        // and push the decoded character (or the raw bytes if invalid).
+        let byte = bytes[i];
+        let seq_len = if byte < 0x80 {
+            1
+        } else if byte < 0xE0 {
+            2
+        } else if byte < 0xF0 {
+            3
+        } else {
+            4
+        };
+
+        if seq_len == 1 {
+            match byte {
+                b'<' => out.push_str("&lt;"),
+                b'>' => out.push_str("&gt;"),
+                b'&' => out.push_str("&amp;"),
+                b'"' => out.push_str("&quot;"),
+                _ => out.push(byte as char),
+            }
+            i += 1;
+        } else if i + seq_len <= len {
+            if let Ok(s) = std::str::from_utf8(&bytes[i..i + seq_len]) {
+                for ch in s.chars() {
+                    match ch {
+                        '<' => out.push_str("&lt;"),
+                        '>' => out.push_str("&gt;"),
+                        '&' => out.push_str("&amp;"),
+                        '"' => out.push_str("&quot;"),
+                        _ => out.push(ch),
+                    }
+                }
+            } else {
+                // Invalid UTF-8 — skip the byte
+                out.push(char::REPLACEMENT_CHARACTER);
+            }
+            i += seq_len;
+        } else {
+            // Truncated multi-byte sequence at end of input
+            out.push(char::REPLACEMENT_CHARACTER);
+            i += 1;
         }
-        i += 1;
     }
 
     if span_open {
@@ -4390,6 +4426,23 @@ mod tests {
     fn test_ansi_bright_colors() {
         let result = ansi_to_html("\x1b[90mgray\x1b[0m");
         assert!(result.contains("color:#5c6370"));
+    }
+
+    #[test]
+    fn test_ansi_multibyte_utf8() {
+        // Multi-byte UTF-8 characters (accented, emoji, CJK) must be
+        // preserved through ANSI conversion, not corrupted by byte-level
+        // char casts.
+        let result = ansi_to_html("héllo café");
+        assert!(result.contains("héllo café"));
+
+        // With ANSI color wrapping a multi-byte character
+        let result = ansi_to_html("\x1b[32m✓\x1b[0m done — ok");
+        assert!(result.contains("done — ok"));
+
+        // CJK characters
+        let result = ansi_to_html("日本語テスト");
+        assert_eq!(result, "日本語テスト");
     }
 
     // -----------------------------------------------------------------------

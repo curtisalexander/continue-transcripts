@@ -161,6 +161,8 @@ continue-transcripts [OPTIONS] <INPUT>
 |--------|-------------|
 | `-o`, `--output <DIR>` | Output directory for generated HTML (default: `output`) |
 | `--filter <STRING>` | Only process sessions whose title contains this string (case-insensitive) |
+| `--since <YYYY-MM-DD>` | Only include sessions created on or after this date |
+| `--before <YYYY-MM-DD>` | Only include sessions created before this date |
 | `-w`, `--workers <N>` | Number of parallel worker threads (defaults to number of CPU cores) |
 | `-h`, `--help` | Print help |
 
