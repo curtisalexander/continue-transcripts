@@ -1,5 +1,5 @@
 use clap::Parser;
-use html_escape::encode_text;
+use html_escape::{encode_double_quoted_attribute, encode_text};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser as MdParser, Tag, TagEnd};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -347,7 +347,7 @@ fn markdown_to_html(md: &str) -> String {
                         // Unknown language – render without highlighting
                         html_output.push_str(&format!(
                             "<pre><code class=\"language-{}\">{}</code></pre>",
-                            encode_text(&code_lang),
+                            encode_double_quoted_attribute(&code_lang),
                             encode_text(&code_buf)
                         ));
                     }
@@ -368,9 +368,17 @@ fn markdown_to_html(md: &str) -> String {
             _ => {}
         }
 
-        // For non-code-block events, render normally via pulldown-cmark
-        let single = std::iter::once(events[i].clone());
-        pulldown_cmark::html::push_html(&mut html_output, single);
+        // For non-code-block events, render normally via pulldown-cmark.
+        // Treat raw HTML as text: transcripts are often shared as standalone
+        // files, so session content should not be able to inject scripts or
+        // arbitrary markup into the generated page.
+        match &events[i] {
+            Event::Html(html) | Event::InlineHtml(html) => html_output.push_str(&encode_text(html)),
+            _ => {
+                let single = std::iter::once(events[i].clone());
+                pulldown_cmark::html::push_html(&mut html_output, single);
+            }
+        }
         i += 1;
     }
 
@@ -809,7 +817,7 @@ fn render_tool_calls(tool_calls: &[ToolCallDelta]) -> String {
                 if let Some(cmd) = &copy_text {
                     html.push_str(&format!(
                         "<div class=\"tool-call-copyable\" data-copy-text=\"{}\">",
-                        encode_text(cmd)
+                        encode_double_quoted_attribute(cmd)
                     ));
                 }
                 html.push_str(&render_tool_args(&func.name, &func.arguments));
@@ -1737,7 +1745,16 @@ fn format_xml_tag_name(tag: &str) -> String {
         .join(" ")
 }
 
+#[cfg(test)]
 fn render_session(session: &Session, source_path: Option<&Path>) -> String {
+    render_session_with_date(session, source_path, None)
+}
+
+fn render_session_with_date(
+    session: &Session,
+    source_path: Option<&Path>,
+    metadata_date: Option<&str>,
+) -> String {
     let title = if session.title.is_empty() {
         "Untitled Session"
     } else {
@@ -1945,6 +1962,7 @@ fn render_session(session: &Session, source_path: Option<&Path>) -> String {
     let date_str = session
         .date_created
         .as_deref()
+        .or(metadata_date)
         .map(format_date_display)
         .or_else(|| source_path.and_then(file_created_date))
         .unwrap_or_else(|| "Unknown date".to_string());
@@ -3294,20 +3312,32 @@ fn discover_session_files(path: &Path) -> Vec<PathBuf> {
         return vec![path.to_path_buf()];
     }
 
-    let mut files: Vec<PathBuf> = Vec::new();
-    if path.is_dir() {
-        // Recursively find .json files
-        let pattern = format!("{}/**/*.json", path.display());
-        for p in glob::glob(&pattern)
-            .expect("Failed to read glob pattern")
-            .flatten()
-        {
-            // Skip sessions.json — it contains session metadata, not a session transcript
-            if p.file_name().is_some_and(|n| n == "sessions.json") {
-                continue;
+    fn visit_dir(dir: &Path, files: &mut Vec<PathBuf>) {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit_dir(&path, files);
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+            {
+                // Skip sessions.json — it contains session metadata, not a session transcript.
+                if path.file_name().is_some_and(|name| name == "sessions.json") {
+                    continue;
+                }
+                files.push(path);
             }
-            files.push(p);
         }
+    }
+
+    let mut files = Vec::new();
+    if path.is_dir() {
+        visit_dir(path, &mut files);
     }
     files.sort();
     files
@@ -3639,7 +3669,14 @@ fn main() {
         HashMap::new()
     };
 
-    fs::create_dir_all(output_dir).expect("Failed to create output directory");
+    if let Err(e) = fs::create_dir_all(output_dir) {
+        eprintln!(
+            "\u{274c} Error: failed to create output directory {}: {}",
+            output_dir.display(),
+            e
+        );
+        std::process::exit(1);
+    }
 
     // Process files in parallel: read, parse, filter, and render HTML concurrently
     let results: Vec<ProcessResult> = files
@@ -3677,6 +3714,11 @@ fn main() {
                     .as_deref()
                     .and_then(parse_session_date)
                     .or_else(|| {
+                        sessions_meta
+                            .get(&session.session_id)
+                            .and_then(|date| parse_session_date(date))
+                    })
+                    .or_else(|| {
                         // Fall back to file creation time
                         file.metadata()
                             .ok()
@@ -3707,8 +3749,6 @@ fn main() {
                 return ProcessResult::Skipped;
             }
 
-            let html = render_session(&session, Some(file.as_path()));
-
             let title = if session.title.is_empty() {
                 session.session_id.clone()
             } else {
@@ -3720,6 +3760,16 @@ fn main() {
                 .or_else(|| sessions_meta.get(&session.session_id).cloned())
                 .or_else(|| file_created_date(file.as_path()))
                 .unwrap_or_default();
+
+            let html = render_session_with_date(
+                &session,
+                Some(file.as_path()),
+                if date.is_empty() {
+                    None
+                } else {
+                    Some(date.as_str())
+                },
+            );
 
             ProcessResult::Success(html, title, date, file.clone())
         })
@@ -3897,7 +3947,7 @@ fn render_index(entries: &[(String, String, String)]) -> String {
     for (title, filename, date) in entries {
         rows.push_str(&format!(
             "    <tr>\n      <td><a href=\"{filename}\">{title}</a></td>\n      <td style=\"white-space:nowrap\">{date}</td>\n    </tr>\n",
-            filename = encode_text(filename),
+            filename = encode_double_quoted_attribute(filename),
             title = encode_text(title),
             date = encode_text(date),
         ));
@@ -4146,6 +4196,30 @@ mod tests {
         assert_eq!(format_date_display("not-a-date"), "not-a-date");
     }
 
+    #[test]
+    fn test_render_session_uses_metadata_date_fallback() {
+        let session = Session {
+            session_id: "date-fallback".to_string(),
+            title: "Date Fallback".to_string(),
+            workspace_directory: String::new(),
+            history: vec![ChatHistoryItem {
+                message: ChatMessage {
+                    role: "user".to_string(),
+                    content: MessageContent::Text("Hello".to_string()),
+                    tool_calls: None,
+                    usage: None,
+                },
+                context_items: vec![],
+                prompt_logs: None,
+                tool_call_states: None,
+            }],
+            date_created: None,
+        };
+
+        let html = render_session_with_date(&session, None, Some("2025-06-15T10:30:00Z"));
+        assert!(html.contains("Date: Jun 15, 2025 at 10:30 AM"));
+    }
+
     // -----------------------------------------------------------------------
     // Date filter parsing tests
     // -----------------------------------------------------------------------
@@ -4276,6 +4350,22 @@ mod tests {
     fn test_markdown_to_html() {
         let html = markdown_to_html("**bold** text");
         assert!(html.contains("<strong>bold</strong>"));
+    }
+
+    #[test]
+    fn test_markdown_escapes_raw_html() {
+        let html = markdown_to_html("Hello <script>alert(1)</script> <b>not raw</b>");
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("&lt;b&gt;not raw&lt;/b&gt;"));
+        assert!(!html.contains("<script>"));
+        assert!(!html.contains("<b>not raw</b>"));
+    }
+
+    #[test]
+    fn test_markdown_unknown_language_class_escapes_attribute() {
+        let html = markdown_to_html("```bad\" onclick=\"alert(1)\ncode\n```");
+        assert!(html.contains("language-bad&quot; onclick=&quot;alert(1)"));
+        assert!(!html.contains("language-bad\" onclick=\"alert(1)"));
     }
 
     #[test]
@@ -5380,6 +5470,21 @@ mod tests {
         assert!(html.contains("sp-xml-block"));
         assert!(html.contains("System Reminder"));
         assert!(html.contains("Important rule here"));
+    }
+
+    #[test]
+    fn test_tool_call_copy_attribute_escapes_quotes() {
+        let tool_calls = vec![ToolCallDelta {
+            function: Some(ToolCallFunction {
+                name: "Bash".to_string(),
+                arguments: r#"{"command": "echo \"hello\" && echo '<ok>'"}"#.to_string(),
+            }),
+        }];
+        let html = render_tool_calls(&tool_calls);
+        assert!(
+            html.contains("data-copy-text=\"echo &quot;hello&quot; &amp;&amp; echo '&lt;ok&gt;'\"")
+        );
+        assert!(!html.contains("data-copy-text=\"echo \"hello\""));
     }
 
     #[test]

@@ -36,8 +36,8 @@ cargo build --release
 # Convert all sessions in a directory
 ./target/release/continue-transcripts ~/.continue/sessions/ -o ./transcripts
 
-# Filter by title and use 4 workers
-./target/release/continue-transcripts ~/.continue/sessions/ --filter "auth" -w 4 -o ./transcripts
+# Filter by title and date, and use 4 workers
+./target/release/continue-transcripts ~/.continue/sessions/ --filter "auth" --since 2025-01-01 -w 4 -o ./transcripts
 ```
 
 Output looks like:
@@ -186,6 +186,19 @@ Filter sessions by title:
 continue-transcripts ~/.continue/sessions/ --filter "auth" -o ./transcripts
 ```
 
+Filter sessions by creation date:
+
+```sh
+# Include sessions from Jan 1, 2025 onward
+continue-transcripts ~/.continue/sessions/ --since 2025-01-01 -o ./transcripts
+
+# Include sessions before Apr 1, 2025 (exclusive)
+continue-transcripts ~/.continue/sessions/ --before 2025-04-01 -o ./transcripts
+
+# Combine filters
+continue-transcripts ~/.continue/sessions/ --since 2025-01-01 --before 2025-04-01 --filter "auth"
+```
+
 Use 8 worker threads for a large directory:
 
 ```sh
@@ -197,6 +210,21 @@ The tool writes one HTML file per session to the output directory, plus an `inde
 ## Where are continue.dev sessions stored?
 
 Continue stores data in `~/.continue/` on Linux and macOS (`%USERPROFILE%\.continue\` on Windows). Session history files are JSON files within this directory. The exact subdirectory may vary by version — check your `~/.continue/` tree or use `find ~/.continue -name '*.json'` to locate them.
+
+The converter skips `sessions.json` automatically. When processing a directory, it uses that metadata file as a fallback source for creation dates when individual session JSON files do not contain `dateCreated`.
+
+## Privacy and sharing
+
+Generated transcripts are self-contained HTML files intended for local viewing or sharing. They may include prompts, tool output, attached context, file paths, terminal output, and snippets of source code from your Continue sessions. Review transcripts before sharing them publicly.
+
+For safer sharing, session Markdown is rendered with raw HTML escaped rather than executed, and generated pages do not load external CSS, JavaScript, fonts, or images.
+
+## Troubleshooting
+
+- **No files found**: verify the input path and locate session JSON files with `find ~/.continue -name '*.json'`.
+- **No sessions after filtering**: `--before` is exclusive and both date flags expect `YYYY-MM-DD`.
+- **Command not found after install**: ensure your `uv`/Python tool bin directory is on `PATH`, or run with `uvx`.
+- **Unsupported platform wheel**: install from source with a Rust toolchain using `uv tool install git+https://github.com/curtisalexander/continue-transcripts` or `cargo build --release`.
 
 ## How it works
 
