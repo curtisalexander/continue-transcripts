@@ -885,10 +885,10 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
                 encode_text(&decoded_path)
             ));
             // Show replace_all flag if present and true
-            if let Some(replace_all) = obj.get("replace_all").and_then(|v| v.as_bool()) {
-                if replace_all {
-                    html.push_str("<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">replace_all</span>: <code>true</code></div>");
-                }
+            if let Some(replace_all) = obj.get("replace_all").and_then(|v| v.as_bool())
+                && replace_all
+            {
+                html.push_str("<div class=\"tool-arg-line\"><span class=\"tool-arg-key\">replace_all</span>: <code>true</code></div>");
             }
             html.push_str("<pre class=\"tool-diff\"><code>");
             for line in old_str.lines() {
@@ -1411,26 +1411,26 @@ fn render_applied_rules(rules: &[RuleMetadata]) -> String {
             .or_else(|| r.slug.clone())
             .unwrap_or_default();
         let mut tip = String::new();
-        if let Some(s) = &r.source {
-            if !s.is_empty() {
-                tip.push_str(&format!("source: {}", s));
-            }
+        if let Some(s) = &r.source
+            && !s.is_empty()
+        {
+            tip.push_str(&format!("source: {}", s));
         }
-        if let Some(d) = &r.description {
-            if !d.is_empty() {
-                if !tip.is_empty() {
-                    tip.push_str(" · ");
-                }
-                tip.push_str(d);
+        if let Some(d) = &r.description
+            && !d.is_empty()
+        {
+            if !tip.is_empty() {
+                tip.push_str(" · ");
             }
+            tip.push_str(d);
         }
-        if let Some(sf) = &r.source_file {
-            if !sf.is_empty() {
-                if !tip.is_empty() {
-                    tip.push_str(" · ");
-                }
-                tip.push_str(&format!("file: {}", sf));
+        if let Some(sf) = &r.source_file
+            && !sf.is_empty()
+        {
+            if !tip.is_empty() {
+                tip.push_str(" · ");
             }
+            tip.push_str(&format!("file: {}", sf));
         }
         let source_class = r
             .source
@@ -1585,21 +1585,21 @@ fn render_message(
 
         // Inline mini-chips for the most useful detail (cache hit) so it's
         // visible without hovering. Cache writes and reasoning stay in the tooltip.
-        if let Some(c) = cached {
-            if c > 0 {
-                badge.push_str(&format!(
+        if let Some(c) = cached
+            && c > 0
+        {
+            badge.push_str(&format!(
                     " <span class=\"token-cache\" title=\"Cached prompt tokens (read from cache)\">cached {}</span>",
                     format_tokens(c)
                 ));
-            }
         }
-        if let Some(r) = reasoning {
-            if r > 0 {
-                badge.push_str(&format!(
+        if let Some(r) = reasoning
+            && r > 0
+        {
+            badge.push_str(&format!(
                     " <span class=\"token-reasoning\" title=\"Reasoning tokens (extended thinking)\">think {}</span>",
                     format_tokens(r)
                 ));
-            }
         }
 
         if let Some((run_p, run_c)) = running_tokens {
@@ -1631,10 +1631,10 @@ fn render_message(
     }
 
     // Applied rules chip strip (rules that fired for this turn)
-    if let Some(rules) = &item.applied_rules {
-        if !rules.is_empty() {
-            html.push_str(&render_applied_rules(rules));
-        }
+    if let Some(rules) = &item.applied_rules
+        && !rules.is_empty()
+    {
+        html.push_str(&render_applied_rules(rules));
     }
 
     // Input modifier badges (@codebase / no-context)
@@ -1643,17 +1643,17 @@ fn render_message(
     }
 
     // Original rich-editor input (only worth showing when not identical to content)
-    if role == "user" {
-        if let Some(es) = &item.editor_state {
-            // Skip if the editor state's plain text matches `message.content` —
-            // there's nothing extra to surface (no mentions, codeblocks, etc.).
-            let mut plain = String::new();
-            collect_editor_text(Some(es), &mut plain);
-            let content_plain = msg.content.text();
-            let editor_has_extras = walk_editor_has_non_text(es);
-            if editor_has_extras || plain.trim() != content_plain.trim() {
-                html.push_str(&render_editor_state(es));
-            }
+    if role == "user"
+        && let Some(es) = &item.editor_state
+    {
+        // Skip if the editor state's plain text matches `message.content` —
+        // there's nothing extra to surface (no mentions, codeblocks, etc.).
+        let mut plain = String::new();
+        collect_editor_text(Some(es), &mut plain);
+        let content_plain = msg.content.text();
+        let editor_has_extras = walk_editor_has_non_text(es);
+        if editor_has_extras || plain.trim() != content_plain.trim() {
+            html.push_str(&render_editor_state(es));
         }
     }
 
@@ -1667,15 +1667,14 @@ fn render_message(
 
     // Anthropic redacted-thinking placeholder (the model's reasoning was
     // returned encrypted; show a marker rather than an empty thinking block)
-    if is_thinking {
-        if let Some(redacted) = &msg.redacted_thinking {
-            if !redacted.is_empty() {
-                html.push_str("  <div class=\"redacted-thinking\" title=\"Anthropic returned encrypted reasoning for this turn\">\n");
-                html.push_str("    <span class=\"redacted-thinking-icon\">\u{1F512}</span>\n");
-                html.push_str("    <span>Reasoning redacted by the provider</span>\n");
-                html.push_str("  </div>\n");
-            }
-        }
+    if is_thinking
+        && let Some(redacted) = &msg.redacted_thinking
+        && !redacted.is_empty()
+    {
+        html.push_str("  <div class=\"redacted-thinking\" title=\"Anthropic returned encrypted reasoning for this turn\">\n");
+        html.push_str("    <span class=\"redacted-thinking-icon\">\u{1F512}</span>\n");
+        html.push_str("    <span>Reasoning redacted by the provider</span>\n");
+        html.push_str("  </div>\n");
     }
 
     // Main content — render all roles as markdown (users write code blocks,
@@ -1688,29 +1687,28 @@ fn render_message(
 
     // Anthropic thinking signature — verifiable cryptographic marker that
     // pairs with a thinking block. Show a small chip when present.
-    if is_thinking {
-        if let Some(sig) = &msg.signature {
-            if !sig.is_empty() {
-                let trunc: String = sig.chars().take(16).collect();
-                let suffix = if sig.chars().count() > 16 { "…" } else { "" };
-                html.push_str(&format!(
+    if is_thinking
+        && let Some(sig) = &msg.signature
+        && !sig.is_empty()
+    {
+        let trunc: String = sig.chars().take(16).collect();
+        let suffix = if sig.chars().count() > 16 { "…" } else { "" };
+        html.push_str(&format!(
                     "  <div class=\"thinking-signature\" title=\"Cryptographic signature: {}\">sig: <code>{}{}</code></div>\n",
                     encode_double_quoted_attribute(sig),
                     encode_text(&trunc),
                     suffix
                 ));
-            }
-        }
     }
 
     // Tool calls (rendered inside the assistant message div)
-    if let Some(calls) = &msg.tool_calls {
-        if !calls.is_empty() {
-            html.push_str("  <div class=\"assistant-tool-group\">\n");
-            html.push_str(&render_tool_calls(calls, item.tool_call_states.as_deref()));
-            // Placeholder for tool results — they'll be injected by render_session
-            html.push_str("  </div>\n");
-        }
+    if let Some(calls) = &msg.tool_calls
+        && !calls.is_empty()
+    {
+        html.push_str("  <div class=\"assistant-tool-group\">\n");
+        html.push_str(&render_tool_calls(calls, item.tool_call_states.as_deref()));
+        // Placeholder for tool results — they'll be injected by render_session
+        html.push_str("  </div>\n");
     }
 
     if is_thinking {
@@ -1939,10 +1937,11 @@ fn collect_tool_names(history: &[ChatHistoryItem]) -> Vec<String> {
     for item in history {
         if let Some(calls) = &item.message.tool_calls {
             for tc in calls {
-                if let Some(func) = &tc.function {
-                    if !func.name.is_empty() && seen.insert(func.name.clone()) {
-                        names.push(func.name.clone());
-                    }
+                if let Some(func) = &tc.function
+                    && !func.name.is_empty()
+                    && seen.insert(func.name.clone())
+                {
+                    names.push(func.name.clone());
                 }
             }
         }
@@ -2122,22 +2121,22 @@ fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
     for item in &session.history {
         if let Some(states) = &item.tool_call_states {
             for state in states {
-                if let Some(tool_def) = &state.tool {
-                    if let Some(func) = &tool_def.function {
-                        if !func.name.is_empty() && seen.insert(func.name.clone()) {
-                            let smd = &tool_def.system_message_description;
-                            tools.push(ExtractedTool {
-                                name: func.name.clone(),
-                                description: func.description.clone(),
-                                system_message_prefix: smd
-                                    .as_ref()
-                                    .map_or(String::new(), |s| s.prefix.clone()),
-                                example_args: smd.as_ref().and_then(|s| s.example_args.clone()),
-                                default_tool_policy: tool_def.default_tool_policy.clone(),
-                                parameters: func.parameters.clone(),
-                            });
-                        }
-                    }
+                if let Some(tool_def) = &state.tool
+                    && let Some(func) = &tool_def.function
+                    && !func.name.is_empty()
+                    && seen.insert(func.name.clone())
+                {
+                    let smd = &tool_def.system_message_description;
+                    tools.push(ExtractedTool {
+                        name: func.name.clone(),
+                        description: func.description.clone(),
+                        system_message_prefix: smd
+                            .as_ref()
+                            .map_or(String::new(), |s| s.prefix.clone()),
+                        example_args: smd.as_ref().and_then(|s| s.example_args.clone()),
+                        default_tool_policy: tool_def.default_tool_policy.clone(),
+                        parameters: func.parameters.clone(),
+                    });
                 }
             }
         }
@@ -2256,23 +2255,25 @@ fn render_tools_reference_from_defs(
                 }
 
                 // Example arguments
-                if let Some(examples) = &tool.example_args {
-                    if !examples.is_empty() {
-                        html.push_str("        <div class=\"tool-section\">\n");
-                        html.push_str("          <div class=\"tool-section-header\">Example Arguments</div>\n");
-                        html.push_str("          <div class=\"tool-example-args\">\n");
-                        for pair in examples {
-                            if pair.len() == 2 {
-                                html.push_str(&format!(
+                if let Some(examples) = &tool.example_args
+                    && !examples.is_empty()
+                {
+                    html.push_str("        <div class=\"tool-section\">\n");
+                    html.push_str(
+                        "          <div class=\"tool-section-header\">Example Arguments</div>\n",
+                    );
+                    html.push_str("          <div class=\"tool-example-args\">\n");
+                    for pair in examples {
+                        if pair.len() == 2 {
+                            html.push_str(&format!(
                                     "            <div class=\"tool-example-arg\"><code class=\"tool-example-key\">{}</code>: <code>{}</code></div>\n",
                                     encode_text(&pair[0]),
                                     encode_text(&pair[1])
                                 ));
-                            }
                         }
-                        html.push_str("          </div>\n");
-                        html.push_str("        </div>\n");
                     }
+                    html.push_str("          </div>\n");
+                    html.push_str("        </div>\n");
                 }
 
                 html.push_str("      </div>\n");
@@ -2455,7 +2456,7 @@ fn parse_system_prompt_sections(input: &str) -> Vec<SystemPromptSection> {
             let chunk = &rest[..chunk_end];
             if !chunk.trim().is_empty() {
                 // Check if last section is Text and merge
-                if let Some(SystemPromptSection::Text(ref mut prev)) = sections.last_mut() {
+                if let Some(SystemPromptSection::Text(prev)) = sections.last_mut() {
                     prev.push_str(chunk);
                 } else {
                     sections.push(SystemPromptSection::Text(chunk.to_string()));
@@ -2465,7 +2466,7 @@ fn parse_system_prompt_sections(input: &str) -> Vec<SystemPromptSection> {
         } else {
             // No more '<' — rest is plain text
             if !rest.trim().is_empty() {
-                if let Some(SystemPromptSection::Text(ref mut prev)) = sections.last_mut() {
+                if let Some(SystemPromptSection::Text(prev)) = sections.last_mut() {
                     prev.push_str(rest);
                 } else {
                     sections.push(SystemPromptSection::Text(rest.to_string()));
@@ -4519,10 +4520,10 @@ fn parse_session_date(date_str: &str) -> Option<chrono::NaiveDate> {
         return Some(d);
     }
     // Try extracting YYYY-MM-DD prefix
-    if date_str.len() >= 10 {
-        if let Ok(d) = chrono::NaiveDate::parse_from_str(&date_str[..10], "%Y-%m-%d") {
-            return Some(d);
-        }
+    if date_str.len() >= 10
+        && let Ok(d) = chrono::NaiveDate::parse_from_str(&date_str[..10], "%Y-%m-%d")
+    {
+        return Some(d);
     }
     None
 }
@@ -4693,14 +4694,14 @@ fn percent_decode(input: &str) -> String {
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) =
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(byte) =
                 u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
-            {
-                decoded.push(byte);
-                i += 3;
-                continue;
-            }
+        {
+            decoded.push(byte);
+            i += 3;
+            continue;
         }
         decoded.push(bytes[i]);
         i += 1;
@@ -4814,14 +4815,13 @@ fn main() {
             };
 
             // Apply title filter if provided
-            if let Some(ref filter) = cli.filter {
-                if !session
+            if let Some(ref filter) = cli.filter
+                && !session
                     .title
                     .to_lowercase()
                     .contains(&filter.to_lowercase())
-                {
-                    return ProcessResult::Skipped;
-                }
+            {
+                return ProcessResult::Skipped;
             }
 
             // Apply date range filters
@@ -4846,15 +4846,15 @@ fn main() {
                             })
                     });
                 if let Some(sd) = session_date {
-                    if let Some(since) = since_date {
-                        if sd < since {
-                            return ProcessResult::Skipped;
-                        }
+                    if let Some(since) = since_date
+                        && sd < since
+                    {
+                        return ProcessResult::Skipped;
                     }
-                    if let Some(before) = before_date {
-                        if sd >= before {
-                            return ProcessResult::Skipped;
-                        }
+                    if let Some(before) = before_date
+                        && sd >= before
+                    {
+                        return ProcessResult::Skipped;
                     }
                 } else {
                     // No date available — skip if we're filtering by date
