@@ -551,10 +551,8 @@ fn ansi_to_html(input: &str) -> String {
                                 style.bg = Some(BG_COLORS[(codes[ci] - 100) as usize].to_string());
                             }
                             // 256-color: 38;5;N or 48;5;N — skip for now
-                            38 | 48 => {
-                                if ci + 2 < codes.len() && codes[ci + 1] == 5 {
-                                    ci += 2; // skip the color index
-                                }
+                            38 | 48 if ci + 2 < codes.len() && codes[ci + 1] == 5 => {
+                                ci += 2; // skip the color index
                             }
                             _ => {} // ignore unknown
                         }
