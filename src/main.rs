@@ -50,7 +50,7 @@ struct Cli {
 // continue.dev session types  (deserialized from JSON)
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 struct Session {
     #[serde(default)]
@@ -63,9 +63,38 @@ struct Session {
     history: Vec<ChatHistoryItem>,
     #[serde(default)]
     date_created: Option<String>,
+    /// Session-level mode: "chat" | "agent" | "plan" | "background".
+    #[serde(default)]
+    mode: Option<String>,
+    /// Model title selected for the session.
+    #[serde(default)]
+    chat_model_title: Option<String>,
+    /// Aggregate session usage including totalCost (USD).
+    #[serde(default)]
+    usage: Option<SessionUsage>,
 }
 
-#[derive(Deserialize, Debug)]
+/// Session-level rollup of usage. Extends `Usage` with a `totalCost`.
+/// We deserialize all sub-fields for schema fidelity even though only
+/// `total_cost` is currently surfaced in the UI.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct SessionUsage {
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    prompt_tokens: u64,
+    /// Total session cost in USD.
+    #[serde(default)]
+    total_cost: Option<f64>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 struct ChatHistoryItem {
     message: ChatMessage,
@@ -75,6 +104,68 @@ struct ChatHistoryItem {
     prompt_logs: Option<Vec<PromptLog>>,
     #[serde(default)]
     tool_call_states: Option<Vec<ToolCallState>>,
+    /// Compaction summary that replaces earlier turns when present.
+    #[serde(default)]
+    conversation_summary: Option<String>,
+    /// Structured reasoning (Anthropic/OpenAI) — separate from `role: thinking`.
+    #[serde(default)]
+    reasoning: Option<Reasoning>,
+    /// Rules that fired for this turn.
+    #[serde(default)]
+    applied_rules: Option<Vec<RuleMetadata>>,
+    /// TipTap/ProseMirror JSON of raw user input.
+    #[serde(default)]
+    editor_state: Option<serde_json::Value>,
+    /// Input modifiers (`useCodebase`, `noContext`).
+    #[serde(default)]
+    modifiers: Option<InputModifiers>,
+}
+
+/// Structured reasoning block (`core/index.d.ts::Reasoning`).
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct Reasoning {
+    #[serde(default)]
+    active: bool,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    start_at: Option<u64>,
+    #[serde(default)]
+    end_at: Option<u64>,
+}
+
+/// Per-turn rule metadata (`core/index.d.ts::RuleMetadata`).
+/// `always_apply` and `invokable` are parsed for schema fidelity but
+/// not currently surfaced in the UI.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct RuleMetadata {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    source_file: Option<String>,
+    #[serde(default)]
+    always_apply: Option<bool>,
+    #[serde(default)]
+    invokable: Option<bool>,
+}
+
+/// User input modifiers (`core/index.d.ts::InputModifiers`).
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct InputModifiers {
+    #[serde(default)]
+    use_codebase: bool,
+    #[serde(default)]
+    no_context: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -83,27 +174,29 @@ struct PromptLog {
     #[serde(default)]
     model_title: String,
     #[serde(default)]
-    completion_options: Option<CompletionOptions>,
-    #[serde(default)]
     prompt: String,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct CompletionOptions {
-    #[serde(default)]
-    model: String,
-    #[serde(default)]
-    tools: Option<Vec<ToolDef>>,
-}
-
 // ---------------------------------------------------------------------------
-// Tool definitions (from toolCallStates and completionOptions.tools)
+// Tool call state (continue.dev's canonical tool-call store)
 // ---------------------------------------------------------------------------
 
+/// Continue.dev's canonical tool-call store. `parsedArgs` is parsed for
+/// schema fidelity but not used directly — we render `function.arguments`
+/// (the raw JSON string) since it preserves source ordering.
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct ToolCallState {
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    /// One of: generating | generated | calling | errored | done | canceled.
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    parsed_args: Option<serde_json::Value>,
+    #[serde(default)]
+    output: Option<Vec<ContextItem>>,
     #[serde(default)]
     tool: Option<ToolDef>,
 }
@@ -140,7 +233,7 @@ struct SystemMessageDescription {
     example_args: Option<Vec<Vec<String>>>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 struct ChatMessage {
     role: String,
@@ -150,15 +243,51 @@ struct ChatMessage {
     tool_calls: Option<Vec<ToolCallDelta>>,
     #[serde(default)]
     usage: Option<Usage>,
+    /// Tool result message → which tool call it is responding to.
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    /// Anthropic redacted-thinking marker on `role: thinking`.
+    #[serde(default)]
+    redacted_thinking: Option<String>,
+    /// Anthropic signature on `role: thinking`.
+    #[serde(default)]
+    signature: Option<String>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct Usage {
     #[serde(default)]
     completion_tokens: u64,
     #[serde(default)]
     prompt_tokens: u64,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
+    #[serde(default)]
+    cache_write_tokens: Option<u64>,
+}
+
+/// `accepted_prediction_tokens` / `rejected_prediction_tokens` are parsed for
+/// schema fidelity but not currently surfaced in the UI.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
+    #[serde(default)]
+    accepted_prediction_tokens: Option<u64>,
+    #[serde(default)]
+    rejected_prediction_tokens: Option<u64>,
 }
 
 /// continue.dev `content` can be a plain string or an array of parts.
@@ -212,9 +341,11 @@ enum MessagePart {
     Unknown,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 struct ToolCallDelta {
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     function: Option<ToolCallFunction>,
 }
@@ -228,8 +359,10 @@ struct ToolCallFunction {
     arguments: String,
 }
 
-#[derive(Deserialize, Debug)]
+/// `icon` is parsed for schema fidelity but not currently rendered.
+#[derive(Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct ContextItem {
     #[serde(default)]
     name: String,
@@ -237,6 +370,35 @@ struct ContextItem {
     description: String,
     #[serde(default)]
     content: String,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    uri: Option<ContextItemUri>,
+    #[serde(default)]
+    id: Option<ContextItemId>,
+    #[serde(default)]
+    hidden: Option<bool>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ContextItemUri {
+    /// "file" or "url".
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default)]
+    value: String,
+}
+
+/// `item_id` is parsed for schema fidelity; we only surface `provider_title`.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct ContextItemId {
+    #[serde(default)]
+    provider_title: String,
+    #[serde(default)]
+    item_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -800,14 +962,23 @@ fn render_tool_args(name: &str, arguments: &str) -> String {
     )
 }
 
-fn render_tool_calls(tool_calls: &[ToolCallDelta]) -> String {
+fn render_tool_calls(tool_calls: &[ToolCallDelta], states: Option<&[ToolCallState]>) -> String {
     let mut html = String::new();
     for tc in tool_calls {
         if let Some(func) = &tc.function {
             html.push_str("<div class=\"tool-call\">");
+            // Status badge from toolCallStates (matched by toolCallId)
+            let status = tc.id.as_ref().and_then(|id| {
+                states
+                    .iter()
+                    .flat_map(|s| s.iter())
+                    .find(|s| s.tool_call_id.as_deref() == Some(id.as_str()))
+                    .and_then(|s| s.status.as_deref())
+            });
             html.push_str(&format!(
-                "<div class=\"tool-call-header\">Tool Call: <strong>{}</strong></div>",
-                encode_text(&func.name)
+                "<div class=\"tool-call-header\">Tool Call: <strong>{}</strong>{}</div>",
+                encode_text(&func.name),
+                render_tool_status_badge(status),
             ));
             if !func.arguments.is_empty() {
                 // For Bash/command tool calls, extract the raw command for copy button
@@ -827,6 +998,34 @@ fn render_tool_calls(tool_calls: &[ToolCallDelta]) -> String {
         }
     }
     html
+}
+
+/// Render a status badge for a tool call.
+/// Statuses: generating | generated | calling | errored | done | canceled.
+/// Returns empty string for None or successful "done" (the absence of a
+/// badge already implies success).
+fn render_tool_status_badge(status: Option<&str>) -> String {
+    let s = match status {
+        Some(s) if !s.is_empty() => s,
+        _ => return String::new(),
+    };
+    // Don't render a badge for the most common "everything went fine" states
+    if s == "done" {
+        return String::new();
+    }
+    let (slug, label) = match s {
+        "errored" => ("errored", "Errored"),
+        "canceled" | "cancelled" => ("canceled", "Canceled"),
+        "calling" => ("calling", "Calling"),
+        "generating" => ("generating", "Generating"),
+        "generated" => ("generated", "Pending"),
+        other => ("other", other),
+    };
+    format!(
+        " <span class=\"tool-status tool-status-{}\">{}</span>",
+        slug,
+        encode_text(label)
+    )
 }
 
 /// Extract a copyable command string from tool call arguments.
@@ -871,12 +1070,59 @@ fn render_context_items(items: &[ContextItem]) -> String {
     html.push_str(&items.len().to_string());
     html.push_str(")</summary>");
     for item in items {
+        // Skip hidden items
+        if item.hidden == Some(true) {
+            continue;
+        }
         html.push_str("<div class=\"context-item\">");
-        if !item.name.is_empty() {
-            html.push_str(&format!(
-                "<div class=\"context-name\">{}</div>",
-                encode_text(&item.name)
-            ));
+
+        // Provider chip from `id.providerTitle` ("file", "url", "codebase", etc.)
+        let provider_chip = item
+            .id
+            .as_ref()
+            .filter(|id| !id.provider_title.is_empty())
+            .map(|id| {
+                format!(
+                    "<span class=\"context-provider\" title=\"Provider: {p}\">{p}</span>",
+                    p = encode_text(&id.provider_title)
+                )
+            })
+            .unwrap_or_default();
+
+        // Optional URI link (file:// or https:// etc.)
+        let uri_link = match &item.uri {
+            Some(u) if !u.value.is_empty() => {
+                let href = match u.kind.as_str() {
+                    "file" => {
+                        if u.value.starts_with("file://") {
+                            u.value.clone()
+                        } else {
+                            format!("file://{}", u.value)
+                        }
+                    }
+                    _ => u.value.clone(),
+                };
+                format!(
+                    " <a class=\"context-uri\" href=\"{}\" rel=\"noreferrer noopener\">{}</a>",
+                    encode_double_quoted_attribute(&href),
+                    encode_text(&u.value)
+                )
+            }
+            _ => String::new(),
+        };
+
+        if !item.name.is_empty() || !provider_chip.is_empty() {
+            html.push_str("<div class=\"context-name\">");
+            if !provider_chip.is_empty() {
+                html.push_str(&provider_chip);
+            }
+            if !item.name.is_empty() {
+                html.push_str(&encode_text(&item.name));
+            }
+            html.push_str(&uri_link);
+            html.push_str("</div>");
+        } else if !uri_link.is_empty() {
+            html.push_str(&format!("<div class=\"context-name\">{}</div>", uri_link));
         }
         if !item.description.is_empty() {
             html.push_str(&format!(
@@ -950,13 +1196,320 @@ fn item_model(item: &ChatHistoryItem) -> Option<&str> {
             if !log.model_title.is_empty() {
                 Some(log.model_title.as_str())
             } else {
-                log.completion_options
-                    .as_ref()
-                    .filter(|opts| !opts.model.is_empty())
-                    .map(|opts| opts.model.as_str())
+                None
             }
         })
     })
+}
+
+/// Walk a TipTap/ProseMirror JSON document and produce a faithful HTML
+/// rendering. Surfaces the original text plus mention chips, slash
+/// commands, and code blocks. Falls back to a `<pre>` JSON dump if the
+/// shape is unfamiliar.
+fn render_editor_state(state: &serde_json::Value) -> String {
+    let mut buf = String::new();
+    if !walk_editor_node(state, &mut buf) {
+        // Fallback: dump the JSON
+        let pretty = serde_json::to_string_pretty(state).unwrap_or_default();
+        buf.clear();
+        buf.push_str("<pre class=\"editor-state-fallback\"><code>");
+        buf.push_str(&encode_text(&pretty));
+        buf.push_str("</code></pre>");
+    }
+    let body = buf;
+    if body.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "  <details class=\"editor-state\">\n    \
+            <summary class=\"editor-state-summary\">Original input <span class=\"es-hint\">(rich editor)</span></summary>\n    \
+            <div class=\"editor-state-content\">{body}</div>\n  \
+         </details>\n",
+        body = body
+    )
+}
+
+/// Recursively walk a ProseMirror node, appending HTML to `out`.
+/// Returns true if at least one renderable element was emitted.
+fn walk_editor_node(node: &serde_json::Value, out: &mut String) -> bool {
+    let obj = match node.as_object() {
+        Some(o) => o,
+        None => return false,
+    };
+    let kind = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match kind {
+        "doc" => walk_editor_children(obj.get("content"), out),
+        "paragraph" => {
+            out.push_str("<p>");
+            let any = walk_editor_children(obj.get("content"), out);
+            out.push_str("</p>");
+            any
+        }
+        "text" => {
+            if let Some(t) = obj.get("text").and_then(|v| v.as_str()) {
+                out.push_str(&encode_text(t));
+                true
+            } else {
+                false
+            }
+        }
+        "mention" => {
+            let label = obj
+                .get("attrs")
+                .and_then(|a| a.get("label").and_then(|v| v.as_str()))
+                .or_else(|| {
+                    obj.get("attrs")
+                        .and_then(|a| a.get("id").and_then(|v| v.as_str()))
+                })
+                .unwrap_or("@mention");
+            out.push_str(&format!(
+                "<span class=\"editor-mention\">{}</span>",
+                encode_text(label)
+            ));
+            true
+        }
+        "slashCommand" | "slash-command" => {
+            let label = obj
+                .get("attrs")
+                .and_then(|a| a.get("name").and_then(|v| v.as_str()))
+                .or_else(|| {
+                    obj.get("attrs")
+                        .and_then(|a| a.get("label").and_then(|v| v.as_str()))
+                })
+                .unwrap_or("/cmd");
+            out.push_str(&format!(
+                "<span class=\"editor-slash\">/{}</span>",
+                encode_text(label)
+            ));
+            true
+        }
+        "codeBlock" | "code_block" => {
+            let lang = obj
+                .get("attrs")
+                .and_then(|a| a.get("language").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            // Collect plain-text from children
+            let mut code = String::new();
+            collect_editor_text(obj.get("content"), &mut code);
+            if !lang.is_empty() {
+                out.push_str(&format!(
+                    "<pre><code class=\"language-{}\">{}</code></pre>",
+                    encode_double_quoted_attribute(lang),
+                    encode_text(&code)
+                ));
+            } else {
+                out.push_str("<pre><code>");
+                out.push_str(&encode_text(&code));
+                out.push_str("</code></pre>");
+            }
+            true
+        }
+        "hardBreak" | "hard_break" => {
+            out.push_str("<br>");
+            true
+        }
+        // Unknown node type — recurse into its children if any
+        _ => walk_editor_children(obj.get("content"), out),
+    }
+}
+
+fn walk_editor_children(content: Option<&serde_json::Value>, out: &mut String) -> bool {
+    let arr = match content.and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return false,
+    };
+    let mut any = false;
+    for child in arr {
+        if walk_editor_node(child, out) {
+            any = true;
+        }
+    }
+    any
+}
+
+/// Returns true if the editor-state tree contains any non-plain-text
+/// node (mentions, slash commands, code blocks, etc.) — i.e. anything
+/// that adds value beyond the flattened `content` string.
+fn walk_editor_has_non_text(node: &serde_json::Value) -> bool {
+    let obj = match node.as_object() {
+        Some(o) => o,
+        None => return false,
+    };
+    let kind = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match kind {
+        "text" | "doc" | "paragraph" | "" => {}
+        _ => return true,
+    }
+    if let Some(arr) = obj.get("content").and_then(|v| v.as_array()) {
+        for child in arr {
+            if walk_editor_has_non_text(child) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn collect_editor_text(content: Option<&serde_json::Value>, out: &mut String) {
+    let arr = match content.and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return,
+    };
+    for child in arr {
+        if let Some(o) = child.as_object() {
+            if o.get("type").and_then(|v| v.as_str()) == Some("text") {
+                if let Some(t) = o.get("text").and_then(|v| v.as_str()) {
+                    out.push_str(t);
+                }
+            } else {
+                collect_editor_text(o.get("content"), out);
+            }
+        }
+    }
+}
+
+/// Render input-modifier badges (`@codebase`, `no-context`) for a turn.
+fn render_modifiers(m: &InputModifiers) -> String {
+    if !m.use_codebase && !m.no_context {
+        return String::new();
+    }
+    let mut html = String::from("  <div class=\"input-modifiers\">\n");
+    if m.use_codebase {
+        html.push_str(
+            "    <span class=\"modifier-badge modifier-codebase\" title=\"User toggled @codebase for this turn\">@codebase</span>\n",
+        );
+    }
+    if m.no_context {
+        html.push_str(
+            "    <span class=\"modifier-badge modifier-nocontext\" title=\"User disabled context attachment for this turn\">no-context</span>\n",
+        );
+    }
+    html.push_str("  </div>\n");
+    html
+}
+
+/// Render the `appliedRules` array as a chip strip — one chip per
+/// rule that fired for this turn (with the rule source as a tooltip).
+fn render_applied_rules(rules: &[RuleMetadata]) -> String {
+    let visible: Vec<&RuleMetadata> = rules
+        .iter()
+        .filter(|r| {
+            r.name.as_deref().is_some_and(|s| !s.is_empty())
+                || r.slug.as_deref().is_some_and(|s| !s.is_empty())
+        })
+        .collect();
+    if visible.is_empty() {
+        return String::new();
+    }
+    let mut html = String::new();
+    html.push_str("  <div class=\"applied-rules\" title=\"Rules applied to this turn\">\n");
+    html.push_str("    <span class=\"applied-rules-label\">Rules:</span>\n");
+    for r in visible {
+        let label = r
+            .name
+            .clone()
+            .or_else(|| r.slug.clone())
+            .unwrap_or_default();
+        let mut tip = String::new();
+        if let Some(s) = &r.source {
+            if !s.is_empty() {
+                tip.push_str(&format!("source: {}", s));
+            }
+        }
+        if let Some(d) = &r.description {
+            if !d.is_empty() {
+                if !tip.is_empty() {
+                    tip.push_str(" · ");
+                }
+                tip.push_str(d);
+            }
+        }
+        if let Some(sf) = &r.source_file {
+            if !sf.is_empty() {
+                if !tip.is_empty() {
+                    tip.push_str(" · ");
+                }
+                tip.push_str(&format!("file: {}", sf));
+            }
+        }
+        let source_class = r
+            .source
+            .as_deref()
+            .map(|s| {
+                let safe: String = s
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '-'
+                        }
+                    })
+                    .collect();
+                format!(" rule-source-{}", safe)
+            })
+            .unwrap_or_default();
+        html.push_str(&format!(
+            "    <span class=\"applied-rule{src}\" title=\"{tip}\">{lbl}</span>\n",
+            src = source_class,
+            tip = encode_double_quoted_attribute(&tip),
+            lbl = encode_text(&label),
+        ));
+    }
+    html.push_str("  </div>\n");
+    html
+}
+
+/// Render the structured `reasoning` block on a ChatHistoryItem.
+///
+/// This is where Anthropic/OpenAI native reasoning streams land —
+/// separate from `role: thinking` messages, which only some providers
+/// emit. Without rendering this block we silently drop the model's
+/// chain-of-thought on modern Sonnet/Opus sessions.
+fn render_reasoning_block(reasoning: &Reasoning) -> String {
+    let trimmed = reasoning.text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let duration = match (reasoning.start_at, reasoning.end_at) {
+        (Some(a), Some(b)) if b > a => {
+            let secs = (b - a) as f64 / 1000.0;
+            format!(" <span class=\"reasoning-duration\">({:.1}s)</span>", secs)
+        }
+        _ => String::new(),
+    };
+    let active_label = if reasoning.active {
+        " · streaming"
+    } else {
+        ""
+    };
+    format!(
+        "  <details class=\"reasoning-block\">\n    \
+            <summary class=\"reasoning-summary\">Reasoning{active}{duration}</summary>\n    \
+            <div class=\"reasoning-content\">\n      {body}\n    </div>\n  \
+         </details>\n",
+        active = active_label,
+        duration = duration,
+        body = markdown_to_html(trimmed),
+    )
+}
+
+/// Render the `conversationSummary` field as a distinct panel above
+/// the turn it's attached to. This field is set by continue.dev's
+/// compaction feature — when it's present, earlier history was
+/// summarized and replaced. Without rendering it, the transcript
+/// looks like it starts mid-conversation.
+fn render_conversation_summary(summary: &str) -> String {
+    if summary.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "<details class=\"conversation-summary\" open>\n  \
+            <summary>Conversation Summary <span class=\"cs-hint\">(earlier turns compacted)</span></summary>\n  \
+            <div class=\"conversation-summary-content\">\n    {}\n  </div>\n\
+         </details>\n",
+        markdown_to_html(summary)
+    )
 }
 
 /// Render a single message (user, assistant, system, thinking).
@@ -995,12 +1548,60 @@ fn render_message(
         let prompt_t = usage.prompt_tokens;
         let comp_t = usage.completion_tokens;
         let total = prompt_t + comp_t;
-        let mut badge = format!(
-            "<span class=\"token-badge\" title=\"Prompt: {} | Completion: {}\">{} tokens</span>",
+
+        // Build a richer tooltip including cache hits and reasoning tokens when present.
+        let mut tip = format!(
+            "Prompt: {} | Completion: {}",
             format_tokens(prompt_t),
-            format_tokens(comp_t),
+            format_tokens(comp_t)
+        );
+        let cached = usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens);
+        let cache_write = usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cache_write_tokens);
+        let reasoning = usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens);
+        if let Some(c) = cached {
+            tip.push_str(&format!(" | Cache hit: {}", format_tokens(c)));
+        }
+        if let Some(c) = cache_write {
+            tip.push_str(&format!(" | Cache write: {}", format_tokens(c)));
+        }
+        if let Some(r) = reasoning {
+            tip.push_str(&format!(" | Reasoning: {}", format_tokens(r)));
+        }
+
+        let mut badge = format!(
+            "<span class=\"token-badge\" title=\"{}\">{} tokens</span>",
+            encode_double_quoted_attribute(&tip),
             format_tokens(total)
         );
+
+        // Inline mini-chips for the most useful detail (cache hit) so it's
+        // visible without hovering. Cache writes and reasoning stay in the tooltip.
+        if let Some(c) = cached {
+            if c > 0 {
+                badge.push_str(&format!(
+                    " <span class=\"token-cache\" title=\"Cached prompt tokens (read from cache)\">cached {}</span>",
+                    format_tokens(c)
+                ));
+            }
+        }
+        if let Some(r) = reasoning {
+            if r > 0 {
+                badge.push_str(&format!(
+                    " <span class=\"token-reasoning\" title=\"Reasoning tokens (extended thinking)\">think {}</span>",
+                    format_tokens(r)
+                ));
+            }
+        }
+
         if let Some((run_p, run_c)) = running_tokens {
             badge.push_str(&format!(
                 " <span class=\"token-running\" title=\"Running total — Prompt: {} | Completion: {}\">(cumul. {})</span>",
@@ -1029,8 +1630,53 @@ fn render_message(
         ));
     }
 
+    // Applied rules chip strip (rules that fired for this turn)
+    if let Some(rules) = &item.applied_rules {
+        if !rules.is_empty() {
+            html.push_str(&render_applied_rules(rules));
+        }
+    }
+
+    // Input modifier badges (@codebase / no-context)
+    if let Some(m) = &item.modifiers {
+        html.push_str(&render_modifiers(m));
+    }
+
+    // Original rich-editor input (only worth showing when not identical to content)
+    if role == "user" {
+        if let Some(es) = &item.editor_state {
+            // Skip if the editor state's plain text matches `message.content` —
+            // there's nothing extra to surface (no mentions, codeblocks, etc.).
+            let mut plain = String::new();
+            collect_editor_text(Some(es), &mut plain);
+            let content_plain = msg.content.text();
+            let editor_has_extras = walk_editor_has_non_text(es);
+            if editor_has_extras || plain.trim() != content_plain.trim() {
+                html.push_str(&render_editor_state(es));
+            }
+        }
+    }
+
+    // Structured reasoning (Anthropic/OpenAI) — render before content if present
+    if let Some(r) = &item.reasoning {
+        html.push_str(&render_reasoning_block(r));
+    }
+
     // Context items (collapsed by default)
     html.push_str(&render_context_items(&item.context_items));
+
+    // Anthropic redacted-thinking placeholder (the model's reasoning was
+    // returned encrypted; show a marker rather than an empty thinking block)
+    if is_thinking {
+        if let Some(redacted) = &msg.redacted_thinking {
+            if !redacted.is_empty() {
+                html.push_str("  <div class=\"redacted-thinking\" title=\"Anthropic returned encrypted reasoning for this turn\">\n");
+                html.push_str("    <span class=\"redacted-thinking-icon\">\u{1F512}</span>\n");
+                html.push_str("    <span>Reasoning redacted by the provider</span>\n");
+                html.push_str("  </div>\n");
+            }
+        }
+    }
 
     // Main content — render all roles as markdown (users write code blocks,
     // lists, and formatting too)
@@ -1040,11 +1686,28 @@ fn render_message(
         html.push_str("  </div>\n");
     }
 
+    // Anthropic thinking signature — verifiable cryptographic marker that
+    // pairs with a thinking block. Show a small chip when present.
+    if is_thinking {
+        if let Some(sig) = &msg.signature {
+            if !sig.is_empty() {
+                let trunc: String = sig.chars().take(16).collect();
+                let suffix = if sig.chars().count() > 16 { "…" } else { "" };
+                html.push_str(&format!(
+                    "  <div class=\"thinking-signature\" title=\"Cryptographic signature: {}\">sig: <code>{}{}</code></div>\n",
+                    encode_double_quoted_attribute(sig),
+                    encode_text(&trunc),
+                    suffix
+                ));
+            }
+        }
+    }
+
     // Tool calls (rendered inside the assistant message div)
     if let Some(calls) = &msg.tool_calls {
         if !calls.is_empty() {
             html.push_str("  <div class=\"assistant-tool-group\">\n");
-            html.push_str(&render_tool_calls(calls));
+            html.push_str(&render_tool_calls(calls, item.tool_call_states.as_deref()));
             // Placeholder for tool results — they'll be injected by render_session
             html.push_str("  </div>\n");
         }
@@ -1102,6 +1765,61 @@ fn render_tool_result_inline(item: &ChatHistoryItem, tool_name: &str, tool_args:
         }
     }
 
+    html.push_str("      </div>\n");
+    html.push_str("    </details>\n");
+    html
+}
+
+/// Render `ToolCallState.output: ContextItem[]` as a tool-result panel.
+/// Used when the schema attached a structured output to the tool call but
+/// no `role: tool` message was emitted (newer continue.dev sessions).
+fn render_structured_tool_output(
+    tool_name: &str,
+    tool_args: &str,
+    output: &[ContextItem],
+) -> String {
+    let label = if tool_name.is_empty() {
+        "Tool Result".to_string()
+    } else {
+        format!("Result: {}", tool_name)
+    };
+    let mut html = String::new();
+    html.push_str("    <details class=\"tool-result-details\">\n");
+    html.push_str(&format!(
+        "      <summary>{} <span class=\"tool-result-source\">(structured)</span></summary>\n",
+        encode_text(&label)
+    ));
+    html.push_str("      <div class=\"tool-result-content\">\n");
+    for ci in output {
+        if !ci.name.is_empty() {
+            html.push_str(&format!(
+                "        <div class=\"context-name\">{}</div>\n",
+                encode_text(&ci.name)
+            ));
+        }
+        if !ci.description.is_empty() {
+            html.push_str(&format!(
+                "        <div class=\"context-desc\">{}</div>\n",
+                encode_text(&ci.description)
+            ));
+        }
+        if !ci.content.is_empty() {
+            let highlighted = try_highlight_tool_result(tool_args, &ci.content);
+            if let Some(hl) = highlighted {
+                html.push_str("        ");
+                html.push_str(&hl);
+                html.push('\n');
+            } else if ci.content.contains('\x1b') {
+                html.push_str("        <pre class=\"tool-result-pre\"><code>");
+                html.push_str(&ansi_to_html(&ci.content));
+                html.push_str("</code></pre>\n");
+            } else {
+                html.push_str("        <pre class=\"tool-result-pre\"><code>");
+                html.push_str(&encode_text(&ci.content));
+                html.push_str("</code></pre>\n");
+            }
+        }
+    }
     html.push_str("      </div>\n");
     html.push_str("    </details>\n");
     html
@@ -1259,20 +1977,14 @@ fn format_date_display(date: &str) -> String {
     date.to_string()
 }
 
-/// Extract the model name from the session history.
-/// Looks through prompt logs for the first non-empty model title,
-/// falling back to the completion_options.model field.
+/// Extract the model name from the session history. Looks through
+/// `promptLogs[].modelTitle` for the first non-empty value.
 fn extract_model(session: &Session) -> Option<String> {
     for item in &session.history {
         if let Some(logs) = &item.prompt_logs {
             for log in logs {
                 if !log.model_title.is_empty() {
                     return Some(log.model_title.clone());
-                }
-                if let Some(opts) = &log.completion_options {
-                    if !opts.model.is_empty() {
-                        return Some(opts.model.clone());
-                    }
                 }
             }
         }
@@ -1285,9 +1997,12 @@ fn extract_model(session: &Session) -> Option<String> {
 /// Prefer an explicit system-role message in the history — this is
 /// the cleanest, most direct representation of the system prompt.
 ///
-/// Fall back to `promptLogs[].prompt` which contains the full
-/// text-formatted prompt sent to the model (all messages concatenated,
-/// not just the system portion).
+/// Fall back to `promptLogs[].prompt`. Continue.dev's default chat
+/// templating (`core/llm/index.ts::_formatChatMessage`) produces a
+/// `<role>\n${content}\n\n` block per message, so `prompt` actually
+/// contains the *whole* conversation, not just the system portion.
+/// `extract_system_from_prompt_log` slices out only the leading
+/// `<system>` block when the templated format is detected.
 fn extract_system_prompt(session: &Session) -> (String, Option<usize>) {
     // Primary: first system message in history
     for (idx, item) in session.history.iter().enumerate() {
@@ -1299,19 +2014,85 @@ fn extract_system_prompt(session: &Session) -> (String, Option<usize>) {
         }
     }
 
-    // Fallback: promptLogs[].prompt — may contain the full conversation
-    // text, not just the system prompt, but is better than nothing.
+    // Fallback: extract just the system block from promptLogs[].prompt.
     for item in &session.history {
         if let Some(logs) = &item.prompt_logs {
             for log in logs {
-                if !log.prompt.is_empty() {
-                    return (log.prompt.clone(), None);
+                if log.prompt.is_empty() {
+                    continue;
+                }
+                let extracted = extract_system_from_prompt_log(&log.prompt);
+                if !extracted.is_empty() {
+                    return (extracted, None);
                 }
             }
         }
     }
 
     (String::new(), None)
+}
+
+/// Roles emitted by continue.dev's chat templating
+/// (`core/llm/index.ts::_formatChatMessage`).
+const TEMPLATED_ROLES: &[&str] = &[
+    "system",
+    "user",
+    "assistant",
+    "tool",
+    "thinking",
+    "developer",
+    "function",
+];
+
+/// Returns true if `s` starts with `<role>\n` for any known templated role.
+fn starts_with_templated_role(s: &str) -> bool {
+    TEMPLATED_ROLES
+        .iter()
+        .any(|role| s.starts_with(&format!("<{}>\n", role)))
+}
+
+/// Find the byte offset of the next `\n\n<role>\n` boundary in `s`,
+/// where `role` is one of `TEMPLATED_ROLES`. Returns the offset of the
+/// `\n\n` (so the caller can slice up to that point).
+fn find_next_role_boundary(s: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(pos) = s[from..].find("\n\n<") {
+        let abs = from + pos;
+        let after_lt = abs + 3; // past `\n\n<`
+        for role in TEMPLATED_ROLES {
+            let needle = format!("{}>\n", role);
+            if s[after_lt..].starts_with(&needle) {
+                return Some(abs);
+            }
+        }
+        from = abs + 3;
+    }
+    None
+}
+
+/// Extract the system prompt portion from a continue.dev
+/// `promptLogs[].prompt` string.
+///
+/// When the prompt uses the `<role>\n${content}\n\n` template format,
+/// this returns only the leading `<system>` block. If the prompt starts
+/// with a *different* role tag, returns empty (no system prompt). If no
+/// role tag is detected, returns the input unchanged (older or
+/// non-templated content).
+fn extract_system_from_prompt_log(prompt: &str) -> String {
+    let trimmed = prompt.trim_start();
+
+    if let Some(after) = trimmed.strip_prefix("<system>\n") {
+        let end = find_next_role_boundary(after).unwrap_or(after.len());
+        return after[..end].trim_end().to_string();
+    }
+
+    if starts_with_templated_role(trimmed) {
+        // Templated prompt with no system message at the start.
+        return String::new();
+    }
+
+    // Plain text — use the whole prompt (legacy / non-templated).
+    prompt.to_string()
 }
 
 /// Structured tool info extracted from toolCallStates or completionOptions.
@@ -1328,8 +2109,11 @@ struct ExtractedTool {
     parameters: Option<serde_json::Value>,
 }
 
-/// Extract tool definitions from toolCallStates[].tool across the session,
-/// falling back to completionOptions.tools in promptLogs.
+/// Extract tool definitions from `toolCallStates[].tool` across the session.
+///
+/// Continue.dev removed `PromptLog.completionOptions` upstream in commit
+/// 00985d3a5 (Aug 2025), so `toolCallStates[].tool` is the only canonical
+/// source for tool defs in current sessions.
 fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
     let mut tools: Vec<ExtractedTool> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -1352,37 +2136,6 @@ fn extract_tool_defs(session: &Session) -> Vec<ExtractedTool> {
                                 default_tool_policy: tool_def.default_tool_policy.clone(),
                                 parameters: func.parameters.clone(),
                             });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Second: collect from completionOptions.tools in promptLogs
-    for item in &session.history {
-        if let Some(logs) = &item.prompt_logs {
-            for log in logs {
-                if let Some(opts) = &log.completion_options {
-                    if let Some(opt_tools) = &opts.tools {
-                        for tool_def in opt_tools {
-                            if let Some(func) = &tool_def.function {
-                                if !func.name.is_empty() && seen.insert(func.name.clone()) {
-                                    let smd = &tool_def.system_message_description;
-                                    tools.push(ExtractedTool {
-                                        name: func.name.clone(),
-                                        description: func.description.clone(),
-                                        system_message_prefix: smd
-                                            .as_ref()
-                                            .map_or(String::new(), |s| s.prefix.clone()),
-                                        example_args: smd
-                                            .as_ref()
-                                            .and_then(|s| s.example_args.clone()),
-                                        default_tool_policy: tool_def.default_tool_policy.clone(),
-                                        parameters: func.parameters.clone(),
-                                    });
-                                }
-                            }
                         }
                     }
                 }
@@ -1842,6 +2595,11 @@ fn render_session_with_date(
             continue;
         }
 
+        // Render compaction summary if attached to this turn (appears above the message)
+        if let Some(summary) = &item.conversation_summary {
+            messages_html.push_str(&render_conversation_summary(summary));
+        }
+
         // Track the latest model from promptLogs on any item
         if let Some(m) = item_model(item) {
             last_model = Some(m.to_string());
@@ -1872,8 +2630,9 @@ fn render_session_with_date(
                 let call_count = item.message.tool_calls.as_ref().map_or(0, |c| c.len());
 
                 if call_count > 0 {
-                    // Collect tool call names and args for matching with results
-                    let call_info: Vec<(String, String)> = item
+                    // Collect tool call (id, name, args) for matching with results.
+                    // Prefer matching by toolCallId; fall back to positional order.
+                    let call_info: Vec<(Option<String>, String, String)> = item
                         .message
                         .tool_calls
                         .as_ref()
@@ -1882,19 +2641,36 @@ fn render_session_with_date(
                         .filter_map(|tc| {
                             tc.function
                                 .as_ref()
-                                .map(|f| (f.name.clone(), f.arguments.clone()))
+                                .map(|f| (tc.id.clone(), f.name.clone(), f.arguments.clone()))
                         })
                         .collect();
 
                     // Look ahead for consecutive tool-result messages
                     let mut tool_results_html = String::new();
                     let mut result_idx = 0;
+                    let mut matched_ids: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
                     let mut j = i + 1;
                     while j < len && history[j].message.role == "tool" {
-                        let (tool_name, tool_args) = if result_idx < call_info.len() {
+                        let result_id = history[j].message.tool_call_id.as_deref();
+                        // Try to match by toolCallId first
+                        let by_id = result_id.and_then(|rid| {
+                            call_info
+                                .iter()
+                                .find(|(id, _, _)| id.as_deref() == Some(rid))
+                        });
+                        let (tool_name, tool_args) = if let Some((id, n, a)) = by_id {
+                            if let Some(id) = id {
+                                matched_ids.insert(id.clone());
+                            }
+                            (n.as_str(), a.as_str())
+                        } else if result_idx < call_info.len() {
+                            if let Some(id) = &call_info[result_idx].0 {
+                                matched_ids.insert(id.clone());
+                            }
                             (
-                                call_info[result_idx].0.as_str(),
                                 call_info[result_idx].1.as_str(),
+                                call_info[result_idx].2.as_str(),
                             )
                         } else {
                             ("", "")
@@ -1906,6 +2682,33 @@ fn render_session_with_date(
                         ));
                         result_idx += 1;
                         j += 1;
+                    }
+
+                    // For any tool call without a matching role:tool message, render the
+                    // structured `output` from toolCallStates if present (newer schema).
+                    if let Some(states) = &item.tool_call_states {
+                        for (id, name, args) in &call_info {
+                            let id_str = match id {
+                                Some(s) => s,
+                                None => continue,
+                            };
+                            if matched_ids.contains(id_str) {
+                                continue;
+                            }
+                            let st = match states
+                                .iter()
+                                .find(|s| s.tool_call_id.as_deref() == Some(id_str.as_str()))
+                            {
+                                Some(s) => s,
+                                None => continue,
+                            };
+                            let output = match &st.output {
+                                Some(o) if !o.is_empty() => o,
+                                _ => continue,
+                            };
+                            tool_results_html
+                                .push_str(&render_structured_tool_output(name, args, output));
+                        }
                     }
 
                     // Also swallow any thinking messages that appear between
@@ -1972,13 +2775,45 @@ fn render_session_with_date(
         workspace_decoded
     };
 
-    let model = extract_model(session);
+    // Prefer session-level `chatModelTitle` (set on newer continue.dev sessions)
+    // over the per-turn model derived from promptLogs.
+    let model = session
+        .chat_model_title
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| extract_model(session));
     let model_meta = match &model {
         Some(m) => format!(
             "\n      <span class=\"meta-item\">Model: <code>{}</code></span>",
             encode_text(m)
         ),
         None => String::new(),
+    };
+
+    let mode_meta = match session.mode.as_deref() {
+        Some(m) if !m.is_empty() => {
+            let slug: String = m
+                .to_lowercase()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            format!(
+                "\n      <span class=\"meta-item mode-badge mode-{slug}\">Mode: {label}</span>",
+                slug = slug,
+                label = encode_text(m),
+            )
+        }
+        _ => String::new(),
+    };
+
+    // Session-level cost (from session.usage.totalCost). Only render when present.
+    let cost_meta = match session.usage.as_ref().and_then(|u| u.total_cost) {
+        Some(c) if c > 0.0 => format!(
+            "\n      <span class=\"meta-item cost-badge\">Cost: ${:.4}</span>",
+            c
+        ),
+        _ => String::new(),
     };
 
     let tokens_meta = if has_any_usage {
@@ -2009,8 +2844,8 @@ fn render_session_with_date(
   <header class="session-header">
     <h1>{title}</h1>
     <div class="session-meta">
-      <span class="meta-item">Date: {date}</span>{model_meta}
-      <span class="meta-item">{user_count} user &middot; {assistant_count} assistant messages</span>{tokens_meta}
+      <span class="meta-item">Date: {date}</span>{model_meta}{mode_meta}
+      <span class="meta-item">{user_count} user &middot; {assistant_count} assistant messages</span>{tokens_meta}{cost_meta}
       <span class="meta-item">Workspace: <code>{workspace}</code></span>
       <span class="meta-item">Session: <code>{session_id}</code></span>
     </div>
@@ -2033,7 +2868,9 @@ fn render_session_with_date(
         session_id = encode_text(&session.session_id),
         date = encode_text(&date_str),
         model_meta = model_meta,
+        mode_meta = mode_meta,
         tokens_meta = tokens_meta,
+        cost_meta = cost_meta,
         workspace = encode_text(&workspace),
         user_count = user_count,
         assistant_count = assistant_count,
@@ -2243,6 +3080,20 @@ body {
   cursor: help;
 }
 
+.token-cache, .token-reasoning {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 4px;
+  vertical-align: middle;
+  cursor: help;
+  font-variant-numeric: tabular-nums;
+}
+.token-cache { background: #cffafe; color: #0e7490; }
+.token-reasoning { background: #ede9fe; color: #5b21b6; }
+
 /* ----- Content ----- */
 .message-content {
   overflow-wrap: break-word;
@@ -2379,6 +3230,226 @@ pre.highlighted-code {
   font-size: 0.88rem;
   overflow-wrap: break-word;
   word-break: break-word;
+}
+
+/* ----- Session-level mode and cost badges ----- */
+.mode-badge {
+  background: #e0e7ff;
+  color: #3730a3;
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mode-badge.mode-agent { background: #dcfce7; color: #166534; }
+.mode-badge.mode-plan  { background: #fef3c7; color: #92400e; }
+.mode-badge.mode-background { background: #fee2e2; color: #991b1b; }
+.cost-badge {
+  background: #ecfeff;
+  color: #155e75;
+  font-variant-numeric: tabular-nums;
+  border-radius: 4px;
+  padding: 1px 8px;
+}
+
+/* ----- Redacted thinking / signature ----- */
+.redacted-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fef3c7;
+  border: 1px dashed var(--thinking-border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--thinking-label);
+  margin: 4px 0;
+}
+.redacted-thinking-icon { font-size: 1rem; }
+.thinking-signature {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.thinking-signature code {
+  background: rgba(0,0,0,0.05);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+/* ----- Original rich-editor input ----- */
+.editor-state {
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: var(--card-bg);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.editor-state-summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  list-style: none;
+}
+.editor-state-summary::-webkit-details-marker { display: none; }
+.editor-state-summary::before { content: '\25B6  '; font-size: 0.6rem; vertical-align: 1px; }
+.editor-state[open] > .editor-state-summary::before { content: '\25BC  '; }
+.es-hint {
+  font-weight: 400;
+  font-style: italic;
+  text-transform: none;
+  letter-spacing: normal;
+  margin-left: 4px;
+}
+.editor-state-content {
+  margin-top: 8px;
+  font-size: 0.88rem;
+}
+.editor-mention {
+  display: inline-block;
+  background: #e0e7ff;
+  color: #3730a3;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.85em;
+}
+.editor-slash {
+  display: inline-block;
+  background: #fef3c7;
+  color: #92400e;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+  font-size: 0.85em;
+}
+.editor-state-fallback {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* ----- Input modifier badges ----- */
+.input-modifiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 8px 0;
+}
+.modifier-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  cursor: help;
+}
+.modifier-codebase { background: #ccfbf1; color: #115e59; border: 1px solid #99f6e4; }
+.modifier-nocontext { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+
+/* ----- Applied rules chips ----- */
+.applied-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 4px 0 8px 0;
+  font-size: 0.72rem;
+}
+.applied-rules-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.applied-rule {
+  background: #f3e8ff;
+  color: #6b21a8;
+  border: 1px solid #e9d5ff;
+  border-radius: 999px;
+  padding: 1px 8px;
+  cursor: help;
+}
+.applied-rule.rule-source-agentFile { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; }
+.applied-rule.rule-source-rules-block { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+.applied-rule.rule-source---continuerules { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+
+/* ----- Reasoning block (Anthropic/OpenAI structured) ----- */
+.reasoning-block {
+  background: var(--thinking-bg);
+  border: 1px solid var(--thinking-border);
+  border-left: 3px solid var(--thinking-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+.reasoning-summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--thinking-label);
+  user-select: none;
+  list-style: none;
+}
+.reasoning-summary::-webkit-details-marker { display: none; }
+.reasoning-summary::before { content: '\25B6  '; font-size: 0.6rem; vertical-align: 1px; }
+.reasoning-block[open] > .reasoning-summary::before { content: '\25BC  '; }
+.reasoning-duration {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+.reasoning-content {
+  margin-top: 8px;
+  font-size: 0.88rem;
+  color: #4b3b00;
+}
+
+/* ----- Conversation summary (compaction) ----- */
+.conversation-summary {
+  background: #ecfdf5;
+  border: 1px dashed #059669;
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 12px 0 16px 0;
+}
+.conversation-summary > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #047857;
+  user-select: none;
+  list-style: none;
+}
+.conversation-summary > summary::-webkit-details-marker { display: none; }
+.conversation-summary > summary::before { content: '\25B6  '; font-size: 0.65rem; vertical-align: 1px; }
+.conversation-summary[open] > summary::before { content: '\25BC  '; }
+.cs-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: #065f46;
+  font-style: italic;
+  margin-left: 8px;
+}
+.conversation-summary-content {
+  margin-top: 10px;
+  font-size: 0.9rem;
+  color: #064e3b;
 }
 
 /* ----- Tools reference panel ----- */
@@ -2548,6 +3619,31 @@ pre.highlighted-code {
   letter-spacing: 0.04em;
 }
 
+.tool-status {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: 1px;
+}
+.tool-status-errored { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+.tool-status-canceled { background: #f3f4f6; color: #4b5563; border: 1px solid #e5e7eb; }
+.tool-status-calling { background: #dbeafe; color: #1e40af; border: 1px solid #bfdbfe; }
+.tool-status-generating, .tool-status-generated { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+.tool-status-other { background: #ede9fe; color: #5b21b6; border: 1px solid #ddd6fe; }
+.tool-result-source {
+  font-style: italic;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .tool-args {
   background: var(--code-bg) !important;
   color: var(--code-text) !important;
@@ -2711,6 +3807,29 @@ pre.highlighted-code {
   font-size: 0.85rem;
   margin-bottom: 2px;
 }
+
+.context-provider {
+  display: inline-block;
+  background: #e0e7ff;
+  color: #3730a3;
+  border-radius: 4px;
+  padding: 0 6px;
+  margin-right: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: 1px;
+}
+
+.context-uri {
+  margin-left: 6px;
+  font-size: 0.78rem;
+  color: var(--link, #2563eb);
+  font-weight: 400;
+  text-decoration: none;
+}
+.context-uri:hover { text-decoration: underline; }
 
 .context-desc {
   color: var(--text-muted);
@@ -4206,12 +5325,15 @@ mod tests {
                     content: MessageContent::Text("Hello".to_string()),
                     tool_calls: None,
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             }],
             date_created: None,
+            ..Default::default()
         };
 
         let html = render_session_with_date(&session, None, Some("2025-06-15T10:30:00Z"));
@@ -4443,12 +5565,15 @@ mod tests {
                     content: MessageContent::Text("Hello".to_string()),
                     tool_calls: None,
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             }],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -4691,6 +5816,7 @@ mod tests {
             name: "src/app.ts".to_string(),
             description: "Main app".to_string(),
             content: "const x: number = 42;".to_string(),
+            ..Default::default()
         }];
         let html = render_context_items(&items);
         // Should use highlighted-code class for TypeScript
@@ -4743,10 +5869,12 @@ mod tests {
                 content: MessageContent::Text("Hello".to_string()),
                 tool_calls: None,
                 usage: None,
+                ..Default::default()
             },
             context_items: vec![],
             prompt_logs: None,
             tool_call_states: None,
+            ..Default::default()
         };
         let html = render_message(&item, None, Some("Claude 3.5 Sonnet"));
         assert!(html.contains("model-badge"));
@@ -4761,10 +5889,12 @@ mod tests {
                 content: MessageContent::Text("Hello".to_string()),
                 tool_calls: None,
                 usage: None,
+                ..Default::default()
             },
             context_items: vec![],
             prompt_logs: None,
             tool_call_states: None,
+            ..Default::default()
         };
         let html = render_message(&item, None, Some("Claude 3.5 Sonnet"));
         // Model badge should not appear on user messages
@@ -4788,10 +5918,12 @@ mod tests {
                         content: MessageContent::Text("You are a helpful assistant.".to_string()),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -4799,13 +5931,16 @@ mod tests {
                         content: MessageContent::Text("Hello".to_string()),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -4840,12 +5975,15 @@ mod tests {
                                 name: "Bash".to_string(),
                                 arguments: r#"{"command": "ls"}"#.to_string(),
                             }),
+                            ..Default::default()
                         }]),
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -4853,13 +5991,16 @@ mod tests {
                         content: MessageContent::Text("file1.txt\nfile2.txt".to_string()),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -4885,10 +6026,12 @@ mod tests {
                 content: MessageContent::Text("I should check the tests.".to_string()),
                 tool_calls: None,
                 usage: None,
+                ..Default::default()
             },
             context_items: vec![],
             prompt_logs: None,
             tool_call_states: None,
+            ..Default::default()
         };
 
         let html = render_message(&item, None, None);
@@ -4924,19 +6067,23 @@ mod tests {
                                 name: "Bash".to_string(),
                                 arguments: String::new(),
                             }),
+                            ..Default::default()
                         },
                         ToolCallDelta {
                             function: Some(ToolCallFunction {
                                 name: "Read".to_string(),
                                 arguments: String::new(),
                             }),
+                            ..Default::default()
                         },
                     ]),
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             },
             ChatHistoryItem {
                 message: ChatMessage {
@@ -4947,12 +6094,15 @@ mod tests {
                             name: "Bash".to_string(), // duplicate
                             arguments: String::new(),
                         }),
+                        ..Default::default()
                     }]),
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             },
         ];
 
@@ -5004,10 +6154,12 @@ mod tests {
                         content: MessageContent::Text("Hello".to_string()),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -5017,14 +6169,18 @@ mod tests {
                         usage: Some(Usage {
                             prompt_tokens: 100,
                             completion_tokens: 50,
+                            ..Default::default()
                         }),
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5050,12 +6206,15 @@ mod tests {
                     content: MessageContent::Text("Hello".to_string()),
                     tool_calls: None,
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             }],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5118,10 +6277,12 @@ mod tests {
                         content: MessageContent::Text("You are a helpful assistant.".to_string()),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -5129,13 +6290,16 @@ mod tests {
                         content: MessageContent::Text("Hello".to_string()),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let (prompt, idx) = extract_system_prompt(&session);
@@ -5155,6 +6319,70 @@ mod tests {
         assert!(prompt.contains("expert software engineer"));
         assert!(prompt.contains("investigate before making changes"));
         // No system message index since it came from promptLogs
+        assert!(idx.is_none());
+    }
+
+    #[test]
+    fn test_extract_system_from_templated_prompt_log() {
+        // Continue.dev's chat template wraps every message in `<role>\n...\n\n`.
+        // We must extract only the leading `<system>` block.
+        let prompt = "<system>\nYou are an expert.\n\n<rules>\nbe nice\n</rules>\n\n<user>\nfix the bug\n\n<assistant>\nsure\n\n";
+        let extracted = extract_system_from_prompt_log(prompt);
+        assert!(extracted.contains("You are an expert"));
+        assert!(extracted.contains("<rules>"));
+        assert!(extracted.contains("be nice"));
+        assert!(
+            !extracted.contains("fix the bug"),
+            "user content must not leak into system prompt: got {:?}",
+            extracted
+        );
+        assert!(!extracted.contains("<user>"));
+        assert!(!extracted.contains("<assistant>"));
+    }
+
+    #[test]
+    fn test_extract_system_from_prompt_log_no_system_tag() {
+        // If the templated prompt starts with a non-system role, there is no
+        // system prompt and we should return empty rather than leak user text.
+        let prompt = "<user>\nhi there\n\n<assistant>\nhello\n\n";
+        assert_eq!(extract_system_from_prompt_log(prompt), "");
+    }
+
+    #[test]
+    fn test_extract_system_from_prompt_log_plain_text() {
+        // Older / non-templated prompts (no role tags) are returned as-is.
+        let prompt = "You are a helpful assistant.\n\nFollow the rules.";
+        let extracted = extract_system_from_prompt_log(prompt);
+        assert_eq!(extracted, prompt);
+    }
+
+    #[test]
+    fn test_extract_system_from_prompt_log_only_system() {
+        // Templated prompt with just a system block (no following messages).
+        let prompt = "<system>\nlone system content\n\n";
+        let extracted = extract_system_from_prompt_log(prompt);
+        assert_eq!(extracted, "lone system content");
+    }
+
+    #[test]
+    fn test_system_prompt_extraction_strips_user_from_templated_log() {
+        // Regression test for the bug where the system prompt panel showed
+        // both the system prompt AND the user's first message because
+        // `promptLogs[].prompt` is the full templated chat, not just system.
+        let raw = fs::read_to_string("tests/fixtures/sample-session-templated-prompt.json")
+            .expect("templated-prompt fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+
+        let (prompt, idx) = extract_system_prompt(&session);
+        assert!(!prompt.is_empty());
+        assert!(prompt.contains("expert software engineer"));
+        assert!(
+            !prompt.contains("parsePayload"),
+            "user message must not appear in the system prompt: got {:?}",
+            prompt
+        );
+        assert!(!prompt.contains("<user>"));
+        assert!(!prompt.contains("<assistant>"));
         assert!(idx.is_none());
     }
 
@@ -5193,28 +6421,26 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_tool_defs_from_completion_options() {
-        // Tools from completionOptions.tools (in promptLogs) when no toolCallStates
+    fn test_extract_tool_defs_covers_all_called_tools() {
+        // Every tool with a toolCallStates entry should appear in the
+        // extracted defs (with description + parameters preserved).
         let raw = fs::read_to_string("tests/fixtures/sample-session-prompt-logs.json")
             .expect("prompt-logs fixture should exist");
         let session: Session = serde_json::from_str(&raw).expect("should parse");
 
         let defs = extract_tool_defs(&session);
-        // Grep and Edit are only in completionOptions.tools (not in toolCallStates)
-        // since they were available but not used via toolCallStates in this fixture
-        assert!(defs.iter().any(|t| t.name == "Grep"));
+        assert!(defs.iter().any(|t| t.name == "Bash"));
+        assert!(defs.iter().any(|t| t.name == "Read"));
         assert!(defs.iter().any(|t| t.name == "Edit"));
+        assert!(defs.iter().any(|t| t.name == "Grep"));
 
         let grep = defs.iter().find(|t| t.name == "Grep").unwrap();
         assert!(grep.description.contains("Search for patterns"));
         assert!(grep.parameters.is_some());
-
-        // Grep has an enum parameter
         let params = grep.parameters.as_ref().unwrap();
         let output_mode = params.get("properties").and_then(|p| p.get("output_mode"));
         assert!(output_mode.is_some());
-        let enum_vals = output_mode.unwrap().get("enum");
-        assert!(enum_vals.is_some());
+        assert!(output_mode.unwrap().get("enum").is_some());
     }
 
     #[test]
@@ -5353,6 +6579,228 @@ mod tests {
         assert!(html.contains("Execute a shell command"));
     }
 
+    #[test]
+    fn test_render_showcase_fixture() {
+        // The showcase fixture exercises most of the new schema fields at
+        // once (mode, totalCost, chatModelTitle, appliedRules, modifiers,
+        // reasoning, tool status, cached tokens). Used for the README
+        // screenshot — this test guards against silent regressions in the
+        // visual surface area.
+        let raw = fs::read_to_string("tests/fixtures/sample-session-showcase.json")
+            .expect("showcase fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        // Header chips
+        assert!(html.contains("Claude Sonnet 4.6"));
+        assert!(html.contains("Mode: agent"));
+        assert!(html.contains("$0.4128"));
+        // Per-turn chrome
+        assert!(html.contains("class=\"applied-rules\""));
+        assert!(html.contains("modifier-codebase"));
+        assert!(html.contains("class=\"reasoning-block\""));
+        assert!(html.contains("3.5s"));
+        // Token cache chip
+        assert!(html.contains("token-cache"));
+        // Tool status — second test run errored
+        assert!(html.contains("tool-status-errored"));
+    }
+
+    #[test]
+    fn test_render_thinking_redacted_and_signature() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-thinking-redacted.json")
+            .expect("thinking-redacted fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        assert!(html.contains("class=\"redacted-thinking\""));
+        assert!(html.contains("Reasoning redacted by the provider"));
+        // Signature is truncated to 16 chars + ellipsis
+        assert!(html.contains("class=\"thinking-signature\""));
+        assert!(html.contains("abcdef0123456789"));
+        assert!(html.contains("…"));
+    }
+
+    #[test]
+    fn test_render_context_item_extras() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-context-extras.json")
+            .expect("context-extras fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        // Provider chips
+        assert!(html.contains("class=\"context-provider\""));
+        assert!(html.contains(">file<"));
+        assert!(html.contains(">url<"));
+        // URI links
+        assert!(html.contains("href=\"file:///home/user/ctx-project/src/auth.ts\""));
+        assert!(html.contains("href=\"https://datatracker.ietf.org/doc/html/rfc6749\""));
+        // Hidden item must not render
+        assert!(!html.contains("internal-secret.env"));
+        assert!(!html.contains("TOKEN="));
+    }
+
+    #[test]
+    fn test_render_editor_state_panel() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-modifiers-editor.json")
+            .expect("modifiers-editor fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        assert!(html.contains("class=\"editor-state\""));
+        assert!(html.contains("Original input"));
+        // mention chip
+        assert!(html.contains("editor-mention"));
+        assert!(html.contains(">@codebase<"));
+        // code block content from editorState
+        assert!(html.contains("rateLimiter"));
+    }
+
+    #[test]
+    fn test_render_input_modifiers_badge() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-modifiers-editor.json")
+            .expect("modifiers-editor fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        assert!(html.contains("class=\"input-modifiers\""));
+        // Badge for useCodebase=true should appear
+        assert!(html.contains("modifier-badge modifier-codebase"));
+        assert!(html.contains(">@codebase<"));
+        // noContext is false → no badge for it (the class name appears in CSS,
+        // but the actual badge markup `modifier-badge modifier-nocontext` should not).
+        assert!(!html.contains("modifier-badge modifier-nocontext"));
+    }
+
+    #[test]
+    fn test_render_applied_rules_chip_strip() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-applied-rules.json")
+            .expect("applied-rules fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        assert!(html.contains("class=\"applied-rules\""));
+        assert!(html.contains(">no-secrets<"));
+        assert!(html.contains(">prefer-typescript<"));
+        // Source-specific class for styling
+        assert!(html.contains("rule-source-agentFile"));
+        // Tooltip carries the description and source
+        assert!(html.contains("Never log credentials"));
+    }
+
+    #[test]
+    fn test_token_badge_includes_cache_and_reasoning_details() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-token-details.json")
+            .expect("token-details fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        // Cache hit chip
+        assert!(html.contains("class=\"token-cache\""));
+        assert!(html.contains("cached 9,800"));
+        // Reasoning chip
+        assert!(html.contains("class=\"token-reasoning\""));
+        assert!(html.contains("think 480"));
+        // Tooltip should include cache write info
+        assert!(html.contains("Cache write: 1,200"));
+    }
+
+    #[test]
+    fn test_tool_call_status_badges_and_structured_output() {
+        let raw = fs::read_to_string("tests/fixtures/sample-session-tool-status.json")
+            .expect("tool-status fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        // Successful "done" calls render no status badge
+        assert!(html.contains("tool-status-errored"));
+        assert!(html.contains("tool-status-canceled"));
+        // Errored badge label
+        assert!(html.contains("Errored"));
+        assert!(html.contains("Canceled"));
+        // Structured output (no role:tool message for call_structured) should render
+        assert!(html.contains("(structured)"));
+        assert!(html.contains("42 rows migrated"));
+    }
+
+    #[test]
+    fn test_session_header_chips() {
+        // Session-level mode, chatModelTitle, and usage.totalCost should
+        // surface as header chips.
+        let raw = fs::read_to_string("tests/fixtures/sample-session-compacted.json")
+            .expect("compacted fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        assert!(
+            html.contains("mode-badge"),
+            "mode badge should render when session.mode is set"
+        );
+        assert!(html.contains("mode-agent"));
+        assert!(html.contains("Mode: agent"));
+        assert!(
+            html.contains("Claude Sonnet 4.6"),
+            "chatModelTitle should appear in header"
+        );
+        assert!(html.contains("cost-badge"));
+        // totalCost = 1.2734 → formatted to 4 decimals
+        assert!(html.contains("$1.2734"));
+    }
+
+    #[test]
+    fn test_render_reasoning_block() {
+        // Anthropic/OpenAI native reasoning streams attach to ChatHistoryItem.reasoning,
+        // separate from `role: thinking`. We must surface that text in the HTML.
+        let raw = fs::read_to_string("tests/fixtures/sample-session-reasoning.json")
+            .expect("reasoning fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        assert!(html.contains("class=\"reasoning-block\""));
+        assert!(html.contains("greedy quantifiers"));
+        // Duration computed from startAt/endAt (3.5s)
+        assert!(
+            html.contains("3.5s"),
+            "duration should be derived from startAt/endAt"
+        );
+        // Should appear inside the assistant message, not as a top-level message
+        let asst_pos = html
+            .find("Assistant")
+            .expect("assistant role label present");
+        let r_pos = html
+            .find("class=\"reasoning-block\"")
+            .expect("reasoning block present");
+        assert!(asst_pos < r_pos, "reasoning should follow assistant header");
+    }
+
+    #[test]
+    fn test_render_conversation_summary_panel() {
+        // Compacted sessions attach a `conversationSummary` to the first
+        // post-compaction history item; without rendering it, the
+        // transcript looks like it starts mid-conversation.
+        let raw = fs::read_to_string("tests/fixtures/sample-session-compacted.json")
+            .expect("compacted fixture should exist");
+        let session: Session = serde_json::from_str(&raw).expect("should parse");
+        let html = render_session(&session, None);
+
+        assert!(html.contains("class=\"conversation-summary\""));
+        assert!(html.contains("Conversation Summary"));
+        // Markdown-rendered summary content
+        assert!(html.contains("Earlier conversation summary"));
+        assert!(html.contains("audit_log"));
+        // Order: summary appears before the user message it precedes
+        let cs_pos = html
+            .find("class=\"conversation-summary\"")
+            .expect("conv summary present");
+        let user_pos = html
+            .find("Now let's migrate")
+            .expect("user message present");
+        assert!(
+            cs_pos < user_pos,
+            "Conversation summary should render above the user message"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // System prompt XML section parsing
     // -----------------------------------------------------------------------
@@ -5454,13 +6902,16 @@ mod tests {
                         ),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5477,8 +6928,9 @@ mod tests {
                 name: "Bash".to_string(),
                 arguments: r#"{"command": "echo \"hello\" && echo '<ok>'"}"#.to_string(),
             }),
+            ..Default::default()
         }];
-        let html = render_tool_calls(&tool_calls);
+        let html = render_tool_calls(&tool_calls, None);
         assert!(
             html.contains("data-copy-text=\"echo &quot;hello&quot; &amp;&amp; echo '&lt;ok&gt;'\"")
         );
@@ -5500,14 +6952,18 @@ mod tests {
                             name: "Bash".to_string(),
                             arguments: r#"{"command": "npm test"}"#.to_string(),
                         }),
+                        ..Default::default()
                     }]),
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             }],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5538,12 +6994,15 @@ mod tests {
                                 name: "Read".to_string(),
                                 arguments: r#"{"file_path": "/tmp/data"}"#.to_string(),
                             }),
+                            ..Default::default()
                         }]),
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -5551,13 +7010,16 @@ mod tests {
                         content: MessageContent::Text("some plain text content here".to_string()),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5590,12 +7052,15 @@ mod tests {
                                 name: "Bash".to_string(),
                                 arguments: r#"{"command": "npm test"}"#.to_string(),
                             }),
+                            ..Default::default()
                         }]),
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -5605,13 +7070,16 @@ mod tests {
                         ),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5644,12 +7112,15 @@ mod tests {
                                 name: "Read".to_string(),
                                 arguments: r#"{"file_path": "/tmp/app.rs"}"#.to_string(),
                             }),
+                            ..Default::default()
                         }]),
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
                 ChatHistoryItem {
                     message: ChatMessage {
@@ -5660,13 +7131,16 @@ mod tests {
                         ),
                         tool_calls: None,
                         usage: None,
+                        ..Default::default()
                     },
                     context_items: vec![],
                     prompt_logs: None,
                     tool_call_states: None,
+                    ..Default::default()
                 },
             ],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5690,16 +7164,20 @@ mod tests {
                     content: MessageContent::Text("Check this file".to_string()),
                     tool_calls: None,
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![ContextItem {
                     name: "notes".to_string(),
                     description: "Plain notes".to_string(),
                     content: "some plain text notes".to_string(),
+                    ..Default::default()
                 }],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             }],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5723,16 +7201,20 @@ mod tests {
                     content: MessageContent::Text("Check this file".to_string()),
                     tool_calls: None,
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![ContextItem {
                     name: "src/app.py".to_string(),
                     description: "Python source".to_string(),
                     content: "import os\nprint('hello')".to_string(),
+                    ..Default::default()
                 }],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             }],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5760,12 +7242,15 @@ mod tests {
                     ),
                     tool_calls: None,
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             }],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5798,12 +7283,15 @@ mod tests {
                     content: MessageContent::Text("Example:\n```xyzlang\nfoo bar\n```".to_string()),
                     tool_calls: None,
                     usage: None,
+                    ..Default::default()
                 },
                 context_items: vec![],
                 prompt_logs: None,
                 tool_call_states: None,
+                ..Default::default()
             }],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5829,6 +7317,7 @@ mod tests {
             workspace_directory: "/tmp".to_string(),
             history: vec![],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);
@@ -5849,6 +7338,7 @@ mod tests {
             workspace_directory: "/tmp".to_string(),
             history: vec![],
             date_created: Some("2025-01-01".to_string()),
+            ..Default::default()
         };
 
         let html = render_session(&session, None);

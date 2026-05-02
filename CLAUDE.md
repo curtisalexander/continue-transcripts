@@ -8,7 +8,7 @@ Converts [continue.dev](https://continue.dev) session JSON files into self-conta
 
 ### Language & build system
 
-- **Core application**: Rust (`src/main.rs` — single-file, ~2600 lines)
+- **Core application**: Rust (`src/main.rs` — single-file, ~6000 lines)
 - **Python wrapper**: Thin shim via [maturin](https://www.maturin.rs/) that packages the Rust binary as a Python wheel
 - **Distribution**: Pre-built wheels on GitHub Releases for Linux x86_64/aarch64, macOS ARM, Windows x86_64
 
@@ -55,8 +55,22 @@ cargo fmt --check
 ```
 
 To auto-fix formatting: `cargo fmt`
+
+Fixture files in `tests/fixtures/`:
+
 - `sample-session.json` — basic conversation
-- `sample-session-rich.json` — complex session with system prompt, tool calls, ANSI output, thinking blocks
+- `sample-session-rich.json` — system prompt, tool calls, ANSI output, thinking blocks
+- `sample-session-prompt-logs.json` — system prompt only in `promptLogs[].prompt`, tool defs in `toolCallStates[].tool`
+- `sample-session-templated-prompt.json` — `promptLogs[].prompt` in templated `<role>\n...\n\n` form (regression for the system-prompt slicing fix)
+- `sample-session-compacted.json` — `conversationSummary` + session-level mode/chatModelTitle/totalCost
+- `sample-session-reasoning.json` — Anthropic-style structured `reasoning` block
+- `sample-session-tool-status.json` — tool call statuses (errored/canceled) and structured `output`
+- `sample-session-token-details.json` — `promptTokensDetails.cachedTokens` + `completionTokensDetails.reasoningTokens`
+- `sample-session-applied-rules.json` — `appliedRules[]` chip strip
+- `sample-session-modifiers-editor.json` — `modifiers` + `editorState` (TipTap JSON with mentions/code blocks)
+- `sample-session-context-extras.json` — context item `id`/`uri`/`hidden` fields
+- `sample-session-thinking-redacted.json` — `redactedThinking` + `signature` on thinking messages
+- `sample-session-showcase.json` — composite fixture used to render the README screenshot (exercises mode/cost/model header, applied rules, modifiers, reasoning, cached tokens, tool status)
 
 ## Key data flow
 
@@ -64,12 +78,27 @@ To auto-fix formatting: `cargo fmt`
 Session JSON file
   → serde_json::from_str() → Session struct
   → render_session()
-    ├── Extract system prompt (first "system" message) → collapsible HTML section
-    ├── Extract full tool descriptions from system prompt → collapsible per-tool panels
-    ├── Track token usage per message → running cumulative totals
-    ├── Group assistant messages with tool calls and tool results
+    ├── Header chips: model (chatModelTitle), mode, totalCost, date, tokens
+    ├── Extract system prompt
+    │     primary: first role:system message
+    │     fallback: leading <system> block of promptLogs[].prompt
+    │              (continue.dev's chat template wraps every message in
+    │               `<role>\n${content}\n\n` — slice only the system part)
+    ├── Extract tool defs from toolCallStates[].tool → collapsible tool panel
+    │     (completionOptions.tools was removed upstream Aug 2025; no fallback)
+    ├── Per turn:
+    │     ├── conversationSummary panel (compaction)
+    │     ├── appliedRules chip strip + modifier badges (@codebase, no-context)
+    │     ├── editorState "Original input" panel (TipTap JSON, mentions, slash)
+    │     ├── reasoning block (Anthropic/OpenAI structured chain-of-thought)
+    │     ├── context items (with provider/uri/icon chips)
+    │     ├── message content (Markdown → syntect-highlighted HTML)
+    │     └── tool calls with status badges (errored/canceled/calling/...)
+    ├── Pair tool calls to results by toolCallId, fall back to positional
+    │     If a call has structured output but no role:tool message,
+    │     render toolCallStates[].output instead.
+    ├── Token badges show cached/cacheWrite/reasoning details when present
     ├── Convert ANSI escape codes → styled <span> elements
-    ├── Render Markdown → HTML (pulldown-cmark + syntect syntax highlighting)
     └── Embed all CSS + JS inline (no external dependencies)
   → Self-contained HTML file
 ```
@@ -78,14 +107,18 @@ Session JSON file
 
 | Struct | Purpose |
 |--------|---------|
-| `Session` | Root: sessionId, title, workspaceDirectory, history, dateCreated |
-| `ChatHistoryItem` | Wraps a ChatMessage + contextItems + promptLogs |
-| `ChatMessage` | role, content, toolCalls, usage (token counts) |
-| `Usage` | completionTokens, promptTokens, completionTokensDetails |
+| `Session` | sessionId, title, workspaceDirectory, history, dateCreated, mode, chatModelTitle, usage (with totalCost) |
+| `ChatHistoryItem` | message + contextItems + promptLogs + toolCallStates + conversationSummary + reasoning + appliedRules + editorState + modifiers |
+| `ChatMessage` | role, content, toolCalls, usage, toolCallId, signature, redactedThinking |
+| `Usage` | promptTokens, completionTokens, promptTokensDetails (cachedTokens, cacheWriteTokens), completionTokensDetails (reasoningTokens) |
+| `Reasoning` | active, text, startAt, endAt — Anthropic/OpenAI structured reasoning |
+| `ToolCallState` | toolCallId, status, parsedArgs, output: ContextItem[], tool: ToolDef |
+| `RuleMetadata` | name/slug/source/description for appliedRules chip strip |
+| `InputModifiers` | useCodebase, noContext (per-turn user-input toggles) |
 | `MessageContent` | Either a plain String or Vec<MessagePart> |
-| `ToolCallDelta` | Tool call with function name + JSON arguments |
-| `ContextItem` | Attached file: name, description, content |
-| `PromptLog` | Model title + completion options |
+| `ToolCallDelta` | id + function (name, arguments JSON string) |
+| `ContextItem` | name, description, content, icon, uri (file/url), id (provider, itemId), hidden |
+| `PromptLog` | modelTitle + prompt (full templated chat) |
 
 ## Key functions (src/main.rs)
 
@@ -93,15 +126,19 @@ Session JSON file
 |----------|---------|
 | `render_session` | Main orchestrator — builds complete HTML document |
 | `render_message` | Renders a single message with role label, content, token badge |
-| `render_tool_calls` | Renders tool call blocks with human-readable arguments |
-| `render_tool_result_inline` | Renders tool results as collapsible details |
-| `render_tools_reference` | Renders the tools panel with full collapsible descriptions |
-| `extract_tool_descriptions` | Parses system prompt for `### ToolName` sections |
-| `markdown_to_html` | Converts Markdown to HTML with syntax highlighting |
-| `ansi_to_html` | Converts ANSI SGR escape codes to styled HTML spans |
-| `render_tool_args` | Formats tool arguments ($ command, key:value, JSON) |
-| `render_index` | Creates index.html listing all sessions |
-| `format_tokens` | Formats token counts as compact strings (1,234 / 12.3k / 1.2M) |
+| `render_tool_calls` | Renders tool call blocks; takes optional `&[ToolCallState]` for status badges |
+| `render_tool_status_badge` | Maps `status` → color-coded chip (errored/canceled/calling/etc.) |
+| `render_tool_result_inline` | Renders role:tool result messages as collapsible details |
+| `render_structured_tool_output` | Renders `ToolCallState.output: ContextItem[]` when no role:tool message exists |
+| `render_conversation_summary` | Compaction summary panel above the post-compaction turn |
+| `render_reasoning_block` | Collapsible reasoning panel with duration (from startAt/endAt) |
+| `render_applied_rules` | Per-turn chip strip of fired rules with source-specific styling |
+| `render_modifiers` | `@codebase` / `no-context` badges |
+| `render_editor_state` | Walks ProseMirror/TipTap JSON → faithful HTML (mentions, slash commands, code blocks) |
+| `render_tools_reference_from_defs` | Tools panel from extracted ToolCallState.tool |
+| `extract_system_from_prompt_log` | Slices the leading `<system>` block out of a templated prompt log |
+| `markdown_to_html` / `ansi_to_html` | Markdown rendering + ANSI escape conversion |
+| `format_tokens` | Compact token formatting (1,234 / 12.3k / 1.2M) |
 
 ## Version management
 
@@ -119,6 +156,15 @@ Sessions are stored as JSON in `~/.continue/sessions/`. Key structure:
 - `history[]` contains `ChatHistoryItem` objects
 - Messages have roles: `user`, `assistant`, `system`, `tool`, `thinking`
 - `assistant` messages may have `toolCalls[]` and `usage` (token counts)
-- `tool` messages contain tool results (may include ANSI escape codes)
+- `tool` messages contain tool results (may include ANSI escape codes); newer sessions also set `toolCallId` on the result
 - `system` messages contain the system prompt with tool definitions under `### ToolName` headers
-- Token usage is in `message.usage` on assistant messages: `{ promptTokens, completionTokens }`
+- Token usage is in `message.usage` on assistant messages: `{ promptTokens, completionTokens, promptTokensDetails?, completionTokensDetails? }`
+
+### Schema gotchas worth knowing
+
+- **`promptLogs[].prompt` is the *entire* templated chat**, not just the system prompt. Continue.dev's `_formatChatMessage` wraps every message as `<role>\n${content}\n\n`, so the full string contains `<system>...\n\n<user>...\n\n<assistant>...`. To get just the system prompt out of it, slice up to the first `\n\n<role>\n` boundary.
+- **`completionOptions` was removed** from `PromptLog` upstream in commit 00985d3a5 (Aug 2025). Tool defs only come from `toolCallStates[].tool` now — only tools that were actually *called* are recoverable from the JSON.
+- **Compaction**: when a long session is compacted, the first post-compaction `ChatHistoryItem` carries a `conversationSummary` string that *replaces* the earlier turns. Render it above the message or the transcript looks like it starts mid-conversation.
+- **`reasoning` block**: Anthropic/OpenAI native chain-of-thought lands in `ChatHistoryItem.reasoning: { active, text, startAt, endAt }` — not as a `role: "thinking"` message. Both can coexist.
+- **Per-turn extras**: `appliedRules[]` (which rules fired), `modifiers: { useCodebase, noContext }` (input toggles), `editorState` (TipTap JSON of the user's raw input with mentions/slash commands).
+- **Session-level**: `mode` (chat/agent/plan/background), `chatModelTitle`, and `usage.totalCost` (USD) are top-level fields.

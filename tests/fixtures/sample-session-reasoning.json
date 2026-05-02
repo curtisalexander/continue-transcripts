@@ -1,0 +1,34 @@
+{
+  "sessionId": "e5f6a7b8-c9d0-1234-efab-567890123456",
+  "title": "Reasoning model session",
+  "workspaceDirectory": "/home/user/reasoning-project",
+  "dateCreated": "2026-03-04T13:45:00Z",
+  "mode": "chat",
+  "chatModelTitle": "Claude Opus 4.7",
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "Why does my regex match too much?"
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "Your `.+` is greedy by default — it'll consume as much as possible before backtracking. Use `.+?` (lazy) or a more specific character class like `[^\"]+` if you're matching inside quotes.",
+        "usage": {
+          "promptTokens": 1850,
+          "completionTokens": 210
+        }
+      },
+      "contextItems": [],
+      "reasoning": {
+        "active": false,
+        "text": "The user has a regex that matches more than intended. The most common cause is the use of `.+` or `.*` which are greedy quantifiers — they match as much as possible. The fix is to either:\n\n1. Use the lazy variant `.+?` / `.*?`\n2. Use a negated character class like `[^\"]+` to bound the match explicitly\n\nI should explain both options briefly without going too deep.",
+        "startAt": 1741096101000,
+        "endAt": 1741096104500
+      }
+    }
+  ]
+}

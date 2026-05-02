@@ -1,0 +1,33 @@
+{
+  "sessionId": "a7b8c9d0-e1f2-3456-abcd-789012345678",
+  "title": "Token cache details",
+  "workspaceDirectory": "/home/user/cache-project",
+  "dateCreated": "2026-04-20T11:00:00Z",
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "What does the cached_tokens field mean?"
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "It's the number of input tokens served from the prompt cache rather than re-billed at full rate.",
+        "usage": {
+          "promptTokens": 12500,
+          "completionTokens": 350,
+          "promptTokensDetails": {
+            "cachedTokens": 9800,
+            "cacheWriteTokens": 1200
+          },
+          "completionTokensDetails": {
+            "reasoningTokens": 480
+          }
+        }
+      },
+      "contextItems": []
+    }
+  ]
+}

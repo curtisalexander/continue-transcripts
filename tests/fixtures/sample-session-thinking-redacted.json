@@ -1,0 +1,42 @@
+{
+  "sessionId": "e1f2a3b4-c5d6-7890-efab-123456789012",
+  "title": "Redacted thinking and signature",
+  "workspaceDirectory": "/home/user/think-project",
+  "dateCreated": "2026-05-01T10:00:00Z",
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "What's the answer?"
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "thinking",
+        "content": "",
+        "redactedThinking": "ENCRYPTED_BLOB_BASE64=="
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "thinking",
+        "content": "Let me reason about this carefully.",
+        "signature": "abcdef0123456789ZZZZZZZZZ"
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "42.",
+        "usage": {
+          "promptTokens": 200,
+          "completionTokens": 5
+        }
+      },
+      "contextItems": []
+    }
+  ]
+}

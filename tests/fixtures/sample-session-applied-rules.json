@@ -1,0 +1,41 @@
+{
+  "sessionId": "b8c9d0e1-f2a3-4567-bcde-890123456789",
+  "title": "Applied rules per turn",
+  "workspaceDirectory": "/home/user/rules-project",
+  "dateCreated": "2026-04-25T15:30:00Z",
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "Add a rate limiter to the /api/login route."
+      },
+      "contextItems": [],
+      "appliedRules": [
+        {
+          "name": "no-secrets",
+          "slug": "no-secrets",
+          "source": "agentFile",
+          "description": "Never log credentials.",
+          "sourceFile": "AGENTS.md"
+        },
+        {
+          "name": "prefer-typescript",
+          "slug": "prefer-typescript",
+          "source": ".continuerules",
+          "alwaysApply": true
+        }
+      ]
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "I'll add an Express rate-limit middleware. Quick check on the current setup first.",
+        "usage": {
+          "promptTokens": 800,
+          "completionTokens": 60
+        }
+      },
+      "contextItems": []
+    }
+  ]
+}

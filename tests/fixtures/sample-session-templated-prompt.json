@@ -1,0 +1,41 @@
+{
+  "sessionId": "c3d4e5f6-a7b8-9012-cdef-345678901234",
+  "title": "Templated prompt log session",
+  "workspaceDirectory": "/home/user/templated-project",
+  "dateCreated": "2026-01-10T09:00:00Z",
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "Please refactor the parsePayload function to handle null inputs."
+      },
+      "contextItems": [],
+      "promptLogs": [
+        {
+          "modelTitle": "Claude Sonnet 4.6",
+          "modelProvider": "anthropic",
+          "prompt": "<system>\nYou are an expert software engineer working in continue.dev. Always investigate before editing. Use tools to read files, run tests, and verify your changes.\n\n<rules>\nNever leak secrets. Prefer small, reviewable diffs.\n</rules>\n\n<user>\nPlease refactor the parsePayload function to handle null inputs.\n\n<assistant>\nI'll start by reading the file.\n\n",
+          "completion": "I'll start by reading the file."
+        }
+      ]
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "I'll start by reading the file.",
+        "usage": {
+          "promptTokens": 1200,
+          "completionTokens": 80
+        }
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "user",
+        "content": "Thanks!"
+      },
+      "contextItems": []
+    }
+  ]
+}

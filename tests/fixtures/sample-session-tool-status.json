@@ -1,0 +1,133 @@
+{
+  "sessionId": "f6a7b8c9-d0e1-2345-fabc-678901234567",
+  "title": "Tool call status badges",
+  "workspaceDirectory": "/home/user/status-project",
+  "dateCreated": "2026-04-08T08:30:00Z",
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "Run the migration."
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "I'll run the migration and then read the verification log.",
+        "toolCalls": [
+          {
+            "id": "call_ok",
+            "type": "function",
+            "function": {
+              "name": "Bash",
+              "arguments": "{\"command\": \"./migrate.sh\"}"
+            }
+          },
+          {
+            "id": "call_failed",
+            "type": "function",
+            "function": {
+              "name": "Bash",
+              "arguments": "{\"command\": \"cat /tmp/missing.log\"}"
+            }
+          },
+          {
+            "id": "call_cancel",
+            "type": "function",
+            "function": {
+              "name": "Bash",
+              "arguments": "{\"command\": \"sleep 1000\"}"
+            }
+          },
+          {
+            "id": "call_structured",
+            "type": "function",
+            "function": {
+              "name": "Read",
+              "arguments": "{\"file_path\": \"/tmp/results.txt\"}"
+            }
+          }
+        ]
+      },
+      "contextItems": [],
+      "toolCallStates": [
+        {
+          "toolCallId": "call_ok",
+          "status": "done",
+          "tool": {
+            "type": "function",
+            "function": {
+              "name": "Bash",
+              "description": "Run shell"
+            }
+          }
+        },
+        {
+          "toolCallId": "call_failed",
+          "status": "errored",
+          "tool": {
+            "type": "function",
+            "function": {
+              "name": "Bash",
+              "description": "Run shell"
+            }
+          }
+        },
+        {
+          "toolCallId": "call_cancel",
+          "status": "canceled",
+          "tool": {
+            "type": "function",
+            "function": {
+              "name": "Bash",
+              "description": "Run shell"
+            }
+          }
+        },
+        {
+          "toolCallId": "call_structured",
+          "status": "done",
+          "output": [
+            {
+              "name": "results.txt",
+              "description": "Migration results",
+              "content": "OK: 42 rows migrated\nOK: integrity check passed\n"
+            }
+          ],
+          "tool": {
+            "type": "function",
+            "function": {
+              "name": "Read",
+              "description": "Read file"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "message": {
+        "role": "tool",
+        "content": "+ ./migrate.sh\nMigration applied to 42 rows.",
+        "toolCallId": "call_ok"
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "tool",
+        "content": "cat: /tmp/missing.log: No such file or directory",
+        "toolCallId": "call_failed"
+      },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "tool",
+        "content": "(canceled by user)",
+        "toolCallId": "call_cancel"
+      },
+      "contextItems": []
+    }
+  ]
+}

@@ -15,137 +15,7 @@
           "modelTitle": "Claude 3.5 Sonnet",
           "modelProvider": "anthropic",
           "prompt": "You are an expert software engineer. You have access to tools for reading files, running commands, and editing code.\n\nAlways investigate before making changes. Use tools to understand the codebase first.",
-          "completion": "Let me investigate the /api/users endpoint to understand what's causing the 500 errors.",
-          "completionOptions": {
-            "model": "claude-3-5-sonnet-20241022",
-            "tools": [
-              {
-                "type": "function",
-                "function": {
-                  "name": "Bash",
-                  "description": "Execute a shell command and return its output. Use this for running tests, installing packages, git operations, and other terminal tasks.",
-                  "parameters": {
-                    "type": "object",
-                    "properties": {
-                      "command": {
-                        "type": "string",
-                        "description": "The shell command to execute"
-                      },
-                      "timeout": {
-                        "type": "number",
-                        "description": "Timeout in milliseconds (max 600000)"
-                      }
-                    },
-                    "required": ["command"]
-                  }
-                },
-                "displayTitle": "Run Command",
-                "readonly": false,
-                "group": "terminal",
-                "systemMessageDescription": {
-                  "prefix": "Execute shell commands and return output"
-                }
-              },
-              {
-                "type": "function",
-                "function": {
-                  "name": "Read",
-                  "description": "Read the contents of a file from the local filesystem. Returns the file content with line numbers.",
-                  "parameters": {
-                    "type": "object",
-                    "properties": {
-                      "file_path": {
-                        "type": "string",
-                        "description": "The absolute path to the file to read"
-                      },
-                      "offset": {
-                        "type": "number",
-                        "description": "Line number to start reading from (0-indexed)"
-                      },
-                      "limit": {
-                        "type": "number",
-                        "description": "Maximum number of lines to read"
-                      }
-                    },
-                    "required": ["file_path"]
-                  }
-                },
-                "displayTitle": "Read File",
-                "readonly": true,
-                "group": "filesystem",
-                "systemMessageDescription": {
-                  "prefix": "Read file contents from the filesystem"
-                }
-              },
-              {
-                "type": "function",
-                "function": {
-                  "name": "Edit",
-                  "description": "Perform exact string replacements in files. The old_string must match exactly.",
-                  "parameters": {
-                    "type": "object",
-                    "properties": {
-                      "file_path": {
-                        "type": "string",
-                        "description": "The absolute path to the file to modify"
-                      },
-                      "old_string": {
-                        "type": "string",
-                        "description": "The exact text to find and replace"
-                      },
-                      "new_string": {
-                        "type": "string",
-                        "description": "The replacement text"
-                      }
-                    },
-                    "required": ["file_path", "old_string", "new_string"]
-                  }
-                },
-                "displayTitle": "Edit File",
-                "readonly": false,
-                "group": "filesystem",
-                "systemMessageDescription": {
-                  "prefix": "Make targeted edits to files"
-                }
-              },
-              {
-                "type": "function",
-                "function": {
-                  "name": "Grep",
-                  "description": "Search for patterns in files using ripgrep. Supports regex and glob filtering.",
-                  "parameters": {
-                    "type": "object",
-                    "properties": {
-                      "pattern": {
-                        "type": "string",
-                        "description": "Regex pattern to search for"
-                      },
-                      "path": {
-                        "type": "string",
-                        "description": "Directory or file to search in"
-                      },
-                      "glob": {
-                        "type": "string",
-                        "description": "Glob pattern to filter files"
-                      },
-                      "output_mode": {
-                        "type": "string",
-                        "description": "Output mode: content, files_with_matches, or count",
-                        "enum": ["content", "files_with_matches", "count"]
-                      }
-                    },
-                    "required": ["pattern"]
-                  }
-                },
-                "displayTitle": "Search",
-                "readonly": true,
-                "group": "search",
-                "systemMessageDescription": {
-                  "prefix": "Search for patterns across the codebase"
-                }
-              }
-            ]
-          }
+          "completion": "Let me investigate the /api/users endpoint to understand what's causing the 500 errors."
         }
       ]
     },
@@ -287,6 +157,14 @@
               "name": "Edit",
               "arguments": "{\"file_path\": \"/home/user/api-project/src/routes/users.ts\", \"old_string\": \"    const user = await db.users.findById(req.params.id);\\n    const profile = getUserProfile(user);\\n    res.json(profile);\", \"new_string\": \"    const user = await db.users.findById(req.params.id);\\n    if (!user) {\\n      return res.status(404).json({ error: 'User not found' });\\n    }\\n    const profile = getUserProfile(user);\\n    res.json(profile);\"}"
             }
+          },
+          {
+            "id": "call_104",
+            "type": "function",
+            "function": {
+              "name": "Grep",
+              "arguments": "{\"pattern\": \"getUserProfile\", \"path\": \"/home/user/api-project/src\"}"
+            }
           }
         ],
         "usage": {
@@ -294,12 +172,98 @@
           "completionTokens": 300
         }
       },
+      "contextItems": [],
+      "toolCallStates": [
+        {
+          "toolCallId": "call_103",
+          "status": "done",
+          "tool": {
+            "type": "function",
+            "function": {
+              "name": "Edit",
+              "description": "Perform exact string replacements in files. The old_string must match exactly.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "file_path": {
+                    "type": "string",
+                    "description": "The absolute path to the file to modify"
+                  },
+                  "old_string": {
+                    "type": "string",
+                    "description": "The exact text to find and replace"
+                  },
+                  "new_string": {
+                    "type": "string",
+                    "description": "The replacement text"
+                  }
+                },
+                "required": ["file_path", "old_string", "new_string"]
+              }
+            },
+            "displayTitle": "Edit File",
+            "readonly": false,
+            "group": "filesystem",
+            "systemMessageDescription": {
+              "prefix": "Make targeted edits to files"
+            }
+          }
+        },
+        {
+          "toolCallId": "call_104",
+          "status": "done",
+          "tool": {
+            "type": "function",
+            "function": {
+              "name": "Grep",
+              "description": "Search for patterns in files using ripgrep. Supports regex and glob filtering.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern to search for"
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Directory or file to search in"
+                  },
+                  "glob": {
+                    "type": "string",
+                    "description": "Glob pattern to filter files"
+                  },
+                  "output_mode": {
+                    "type": "string",
+                    "description": "Output mode: content, files_with_matches, or count",
+                    "enum": ["content", "files_with_matches", "count"]
+                  }
+                },
+                "required": ["pattern"]
+              }
+            },
+            "displayTitle": "Search",
+            "readonly": true,
+            "group": "search",
+            "systemMessageDescription": {
+              "prefix": "Search for patterns across the codebase"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "message": {
+        "role": "tool",
+        "content": "Edit applied successfully.",
+        "toolCallId": "call_103"
+      },
       "contextItems": []
     },
     {
       "message": {
         "role": "tool",
-        "content": "Edit applied successfully."
+        "content": "src/routes/users.ts:10:    const profile = getUserProfile(user);\nsrc/routes/users.ts:17:function getUserProfile(user: any) {",
+        "toolCallId": "call_104"
       },
       "contextItems": []
     },

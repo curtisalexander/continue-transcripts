@@ -1,0 +1,34 @@
+{
+  "sessionId": "d4e5f6a7-b8c9-0123-defa-456789012345",
+  "title": "Compacted long-running migration session",
+  "workspaceDirectory": "/home/user/big-project",
+  "dateCreated": "2026-02-12T16:00:00Z",
+  "mode": "agent",
+  "chatModelTitle": "Claude Sonnet 4.6",
+  "usage": {
+    "promptTokens": 91200,
+    "completionTokens": 8400,
+    "totalCost": 1.2734
+  },
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "Now let's migrate the orders table to UUIDs."
+      },
+      "contextItems": [],
+      "conversationSummary": "## Earlier conversation summary\n\nWe migrated the `users`, `sessions`, and `audit_log` tables from auto-increment integer primary keys to UUIDs. For each table we:\n\n1. Added a new `id_uuid` column with `gen_random_uuid()` default\n2. Backfilled existing rows in batches of 5,000\n3. Updated all foreign keys to reference the UUID column\n4. Renamed the columns and dropped the old integer PKs\n\nAll tests pass. The deploy plan is documented in `docs/uuid-migration.md`."
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "Sure — I'll apply the same pattern to the `orders` table. Let me start by checking its foreign-key dependencies.",
+        "usage": {
+          "promptTokens": 4200,
+          "completionTokens": 60
+        }
+      },
+      "contextItems": []
+    }
+  ]
+}

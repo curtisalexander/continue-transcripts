@@ -1,0 +1,36 @@
+{
+  "sessionId": "d0e1f2a3-b4c5-6789-defa-012345678901",
+  "title": "Context items with provider/uri/icon",
+  "workspaceDirectory": "/home/user/ctx-project",
+  "dateCreated": "2026-04-30T12:00:00Z",
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "Look at this file and the linked doc."
+      },
+      "contextItems": [
+        {
+          "name": "src/auth.ts",
+          "description": "Auth module",
+          "content": "export function login(req, res) { /* ... */ }",
+          "id": { "providerTitle": "file", "itemId": "auth-ts" },
+          "uri": { "type": "file", "value": "/home/user/ctx-project/src/auth.ts" }
+        },
+        {
+          "name": "OAuth 2.0 spec",
+          "description": "RFC 6749",
+          "content": "The OAuth 2.0 authorization framework enables a third-party application...",
+          "id": { "providerTitle": "url", "itemId": "rfc-6749" },
+          "uri": { "type": "url", "value": "https://datatracker.ietf.org/doc/html/rfc6749" }
+        },
+        {
+          "name": "internal-secret.env",
+          "description": "should not appear",
+          "content": "TOKEN=...",
+          "hidden": true
+        }
+      ]
+    }
+  ]
+}

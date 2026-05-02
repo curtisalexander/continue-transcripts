@@ -1,0 +1,53 @@
+{
+  "sessionId": "c9d0e1f2-a3b4-5678-cdef-901234567890",
+  "title": "Modifiers and editor state",
+  "workspaceDirectory": "/home/user/mod-project",
+  "dateCreated": "2026-04-29T09:15:00Z",
+  "history": [
+    {
+      "message": {
+        "role": "user",
+        "content": "Where is the rate limiter implemented?"
+      },
+      "contextItems": [],
+      "modifiers": {
+        "useCodebase": true,
+        "noContext": false
+      },
+      "editorState": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              { "type": "text", "text": "Where is the " },
+              {
+                "type": "mention",
+                "attrs": { "label": "@codebase", "id": "codebase" }
+              },
+              { "type": "text", "text": " rate limiter implemented?" }
+            ]
+          },
+          {
+            "type": "codeBlock",
+            "attrs": { "language": "ts" },
+            "content": [
+              { "type": "text", "text": "rateLimiter({ windowMs: 60_000, max: 5 })" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "It's in `src/middleware/rate-limit.ts`.",
+        "usage": {
+          "promptTokens": 600,
+          "completionTokens": 30
+        }
+      },
+      "contextItems": []
+    }
+  ]
+}
