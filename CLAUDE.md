@@ -151,14 +151,11 @@ When asked to "bump version", update **all four** of these locations:
 3. `python/continue_transcripts/__init__.py` — `__version__ = "X.Y.Z"`
 4. `README.md` — all `--find-links` URLs containing the release version (e.g. `expanded_assets/vX.Y.Z`)
 
-After the bump commit lands on `main`, **tag the release and push the tag** (CI builds the release wheels on tag push):
+### Releasing
 
-```sh
-git tag vX.Y.Z        # lightweight tag on the bump commit (matches recent convention)
-git push origin vX.Y.Z
-```
+Releases are **fully automated on push to `main`** — there is no manual tagging step. `.github/workflows/ci.yml` triggers on push to `main` (not on tags); its `build` + `release` jobs read the version from `Cargo.toml`, build all four platform wheels, and the `release` job (softprops/action-gh-release) creates the `vX.Y.Z` GitHub Release, creates the matching tag on the bump commit, and uploads the wheels.
 
-The tag should point at the version-bump commit. Don't forget this step — a bumped version with no tag means no published wheels.
+So to cut a release: bump the four files above, commit, and push to `main`. CI does the rest. Do **not** create or push tags by hand — the release job owns the tag, and a manual tag is redundant (at best a no-op pointing at the same commit). Just confirm the run's `build` and `release` jobs went green and the release has four `.whl` assets.
 
 ## continue.dev session format
 
