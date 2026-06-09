@@ -4709,10 +4709,24 @@ fn percent_decode(input: &str) -> String {
     String::from_utf8(decoded).unwrap_or_else(|_| input.to_string())
 }
 
+/// Derive a short project name from a session's `workspaceDirectory`.
+/// Decodes any `file://` / percent-encoding, then takes the final path
+/// component (the relative project directory). Returns an empty string
+/// when no workspace is recorded.
+fn project_name_from_workspace(workspace_directory: &str) -> String {
+    let decoded = decode_path(workspace_directory);
+    decoded
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Result of processing a single session file.
 enum ProcessResult {
-    /// Successfully processed: (html, title, date, source_path)
-    Success(String, String, String, PathBuf),
+    /// Successfully processed: (html, title, date, project, source_path)
+    Success(String, String, String, String, PathBuf),
     /// Skipped (filtered out or empty history)
     Skipped,
     /// Failed to read or parse
@@ -4888,12 +4902,14 @@ fn main() {
                 },
             );
 
-            ProcessResult::Success(html, title, date, file.clone())
+            let project = project_name_from_workspace(&session.workspace_directory);
+
+            ProcessResult::Success(html, title, date, project, file.clone())
         })
         .collect();
 
     // Write output files and build the index
-    let mut index_entries: Vec<(String, String, String)> = Vec::new();
+    let mut index_entries: Vec<(String, String, String, String)> = Vec::new();
     let mut used_filenames = std::collections::HashSet::new();
     let mut files_written = 0u32;
     let mut files_unchanged = 0u32;
@@ -4903,7 +4919,7 @@ fn main() {
 
     for result in &results {
         match result {
-            ProcessResult::Success(html, title, date, source) => {
+            ProcessResult::Success(html, title, date, project, source) => {
                 let filename = unique_filename(
                     title,
                     if date.is_empty() {
@@ -4936,7 +4952,12 @@ fn main() {
                             {
                                 Ok(_) => {
                                     eprintln!("  \u{2705} {}", out_path.display());
-                                    index_entries.push((title.clone(), filename, date.clone()));
+                                    index_entries.push((
+                                        title.clone(),
+                                        filename,
+                                        date.clone(),
+                                        project.clone(),
+                                    ));
                                     files_written += 1;
                                 }
                                 Err(e) => {
@@ -4958,7 +4979,7 @@ fn main() {
                     }
                 } else {
                     // File exists and is unchanged — skip writing
-                    index_entries.push((title.clone(), filename, date.clone()));
+                    index_entries.push((title.clone(), filename, date.clone(), project.clone()));
                     files_unchanged += 1;
                 }
             }
@@ -5059,14 +5080,46 @@ fn main() {
 // Index page
 // ---------------------------------------------------------------------------
 
-fn render_index(entries: &[(String, String, String)]) -> String {
+fn render_index(entries: &[(String, String, String, String)]) -> String {
     let mut rows = String::new();
-    for (title, filename, date) in entries {
+    for (title, filename, date, project) in entries {
+        let project_cell = if project.is_empty() {
+            "<span class=\"project-empty\">\u{2014}</span>".to_string()
+        } else {
+            format!(
+                "<button type=\"button\" class=\"project-tag\" data-project=\"{project_attr}\">{project}</button>",
+                project_attr = encode_double_quoted_attribute(project),
+                project = encode_text(project),
+            )
+        };
         rows.push_str(&format!(
-            "    <tr>\n      <td><a href=\"{filename}\">{title}</a></td>\n      <td style=\"white-space:nowrap\">{date}</td>\n    </tr>\n",
+            "    <tr data-project=\"{project_attr}\">\n      <td><a href=\"{filename}\">{title}</a></td>\n      <td>{project_cell}</td>\n      <td style=\"white-space:nowrap\">{date}</td>\n    </tr>\n",
+            project_attr = encode_double_quoted_attribute(project),
             filename = encode_double_quoted_attribute(filename),
             title = encode_text(title),
+            project_cell = project_cell,
             date = encode_text(date),
+        ));
+    }
+
+    // Collect the distinct project names for the clickable filter chips,
+    // sorted case-insensitively. Skip sessions with no recorded workspace.
+    let mut projects: Vec<&str> = entries
+        .iter()
+        .map(|(_, _, _, project)| project.as_str())
+        .filter(|p| !p.is_empty())
+        .collect();
+    projects.sort_by_key(|p| p.to_lowercase());
+    projects.dedup();
+
+    let mut tags = String::from(
+        "    <button type=\"button\" class=\"project-tag is-active\" data-project=\"\">All</button>\n",
+    );
+    for project in &projects {
+        tags.push_str(&format!(
+            "    <button type=\"button\" class=\"project-tag\" data-project=\"{project_attr}\">{project}</button>\n",
+            project_attr = encode_double_quoted_attribute(project),
+            project = encode_text(project),
         ));
     }
 
@@ -5087,6 +5140,12 @@ fn render_index(entries: &[(String, String, String)]) -> String {
   .search-box {{ width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; margin-bottom: 16px; background: var(--card-bg); color: var(--text); }}
   .search-box::placeholder {{ color: var(--text-muted); }}
   .no-results {{ text-align: center; padding: 24px; color: var(--text-muted); display: none; }}
+  .project-tags {{ display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }}
+  .project-tag {{ font: inherit; font-size: 0.82rem; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--card-bg); color: var(--text-muted); cursor: pointer; white-space: nowrap; }}
+  .project-tag:hover {{ color: var(--text); border-color: var(--user-border); }}
+  .project-tag.is-active {{ background: var(--user-border); border-color: var(--user-border); color: #fff; }}
+  td .project-tag {{ font-weight: 500; }}
+  .project-empty {{ color: var(--text-muted); }}
 </style>
 </head>
 <body>
@@ -5098,9 +5157,11 @@ fn render_index(entries: &[(String, String, String)]) -> String {
       <span class="meta-item">{count} session(s)</span>
     </div>
   </header>
-  <input type="text" class="search-box" placeholder="Filter sessions by title or date\u2026" autocomplete="off">
+  <input type="text" class="search-box" placeholder="Filter sessions by title, project, or date\u2026" autocomplete="off">
+  <div class="project-tags">
+{tags}  </div>
   <table>
-    <thead><tr><th>Session</th><th style="width: 22ch;">Date</th></tr></thead>
+    <thead><tr><th>Session</th><th>Project</th><th style="width: 22ch;">Date</th></tr></thead>
     <tbody>
 {rows}
     </tbody>
@@ -5152,29 +5213,57 @@ document.addEventListener('DOMContentLoaded', function() {{
     }}
   }})();
 
-  // Search / filter
+  // Search / filter (text query combined with the selected project tag)
   var input = document.querySelector('.search-box');
   var rows = document.querySelectorAll('tbody tr');
   var noResults = document.querySelector('.no-results');
-  if (input && rows.length) {{
-    input.addEventListener('input', function() {{
-      var q = input.value.toLowerCase();
-      var visible = 0;
-      rows.forEach(function(row) {{
-        var text = row.textContent.toLowerCase();
-        var match = !q || text.indexOf(q) !== -1;
-        row.style.display = match ? '' : 'none';
-        if (match) visible++;
-      }});
-      noResults.style.display = visible === 0 ? 'block' : 'none';
+  var tags = document.querySelectorAll('.project-tags .project-tag');
+  var activeProject = '';
+
+  function applyFilter() {{
+    var q = input ? input.value.toLowerCase() : '';
+    var visible = 0;
+    rows.forEach(function(row) {{
+      var text = row.textContent.toLowerCase();
+      var textMatch = !q || text.indexOf(q) !== -1;
+      var projectMatch = !activeProject || row.getAttribute('data-project') === activeProject;
+      var match = textMatch && projectMatch;
+      row.style.display = match ? '' : 'none';
+      if (match) visible++;
     }});
+    if (noResults) noResults.style.display = visible === 0 ? 'block' : 'none';
   }}
+
+  function selectProject(project) {{
+    activeProject = project;
+    tags.forEach(function(tag) {{
+      tag.classList.toggle('is-active', tag.getAttribute('data-project') === project);
+    }});
+    applyFilter();
+  }}
+
+  if (input) input.addEventListener('input', applyFilter);
+
+  // Tag strip buttons set the active project filter.
+  tags.forEach(function(tag) {{
+    tag.addEventListener('click', function() {{
+      selectProject(tag.getAttribute('data-project'));
+    }});
+  }});
+
+  // Clicking a project tag inside a table row filters to that project too.
+  document.querySelectorAll('tbody .project-tag').forEach(function(tag) {{
+    tag.addEventListener('click', function() {{
+      selectProject(tag.getAttribute('data-project'));
+    }});
+  }});
 }});
 </script>
 </body>
 </html>"##,
         CSS = CSS,
         count = entries.len(),
+        tags = tags,
         rows = rows,
     )
 }
@@ -5198,6 +5287,64 @@ mod tests {
     fn test_message_content_empty() {
         let mc = MessageContent::Text("   ".to_string());
         assert!(mc.is_empty());
+    }
+
+    #[test]
+    fn test_project_name_from_workspace() {
+        assert_eq!(
+            project_name_from_workspace("/Users/me/code/continue-transcripts"),
+            "continue-transcripts"
+        );
+        // Trailing slash is ignored.
+        assert_eq!(
+            project_name_from_workspace("/Users/me/code/my-project/"),
+            "my-project"
+        );
+        // file:// URI with percent-encoding is decoded.
+        assert_eq!(
+            project_name_from_workspace("file:///Users/me/code/My%20Project"),
+            "My Project"
+        );
+        // Windows-style separators.
+        assert_eq!(
+            project_name_from_workspace("C:\\Users\\me\\code\\winproj"),
+            "winproj"
+        );
+        // No workspace recorded.
+        assert_eq!(project_name_from_workspace(""), "");
+    }
+
+    #[test]
+    fn test_render_index_project_tags() {
+        let entries = vec![
+            (
+                "First".to_string(),
+                "first.html".to_string(),
+                "2025-06-15".to_string(),
+                "alpha".to_string(),
+            ),
+            (
+                "Second".to_string(),
+                "second.html".to_string(),
+                "2025-06-14".to_string(),
+                "beta".to_string(),
+            ),
+            (
+                "Third".to_string(),
+                "third.html".to_string(),
+                "2025-06-13".to_string(),
+                "alpha".to_string(),
+            ),
+        ];
+        let html = render_index(&entries);
+        // One filter chip per distinct project, plus the "All" chip.
+        assert!(html.contains(">All</button>"));
+        assert!(html.contains("data-project=\"alpha\""));
+        assert!(html.contains("data-project=\"beta\""));
+        // Rows carry the project for filtering.
+        assert!(html.contains("<tr data-project=\"alpha\">"));
+        // Project column header is present.
+        assert!(html.contains("<th>Project</th>"));
     }
 
     #[test]

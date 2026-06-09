@@ -16,7 +16,7 @@ Convert [continue.dev](https://continue.dev) session files to readable, self-con
 - **Detailed tools reference panel** — all tools used in the session are listed with full descriptions, parameters, and usage notes (parsed from the system prompt), each in its own collapsible section
 - **Token usage tracking** — per-message token counts (prompt + completion) with running cumulative totals and session-wide summary in the header (when usage data is available in the session)
 - Displays context items (attached files/code) in collapsible sections
-- Generates an `index.html` linking all processed sessions when given a directory
+- Generates an `index.html` linking all processed sessions when given a directory, with a free-text filter box, **clickable project tags** (derived from each session's workspace directory) to filter to a single project (the per-row tag is also clickable), combined with the text filter
 - Optional title-based filtering with `--filter`
 - **Parallel processing** with configurable worker count (`--workers`)
 - **Terminal summary** — file counts, elapsed time, and per-file status indicators
@@ -73,7 +73,7 @@ Install globally so the `continue-transcripts` command is always available:
 ```sh
 uv tool install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.16.1
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.17.0
 ```
 
 The `continue-transcripts` command is then available on your `PATH`.
@@ -83,7 +83,7 @@ To upgrade later (update the version in the URL):
 ```sh
 uv tool install --upgrade continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.16.1
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.17.0
 ```
 
 To uninstall:
@@ -100,7 +100,7 @@ Run without installing:
 uvx \
   --no-index \
   --from continue-transcripts \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.16.1 \
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.17.0 \
   continue-transcripts ./sessions
 ```
 
@@ -115,7 +115,7 @@ uv venv .venv
 source .venv/bin/activate
 uv pip install continue-transcripts \
   --no-index \
-  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.16.1
+  --find-links https://github.com/curtisalexander/continue-transcripts/releases/expanded_assets/v0.17.0
 ```
 
 ### Building from source
@@ -239,7 +239,7 @@ For safer sharing, session Markdown is rendered with raw HTML escaped rather tha
    - Renders Markdown to HTML with syntax highlighting via [pulldown-cmark](https://crates.io/crates/pulldown-cmark) + [syntect](https://crates.io/crates/syntect)
 4. Produces a self-contained HTML file per session (all CSS and JavaScript are embedded — no external dependencies)
 5. Deduplicates output filenames (truncated to 60 chars, with `_1`, `_2` suffixes on collision)
-6. Generates an `index.html` listing all sessions when processing multiple files
+6. Generates an `index.html` listing all sessions when processing multiple files, with a text filter and clickable project tags (the relative workspace directory name) for narrowing to a single project
 7. Prints a summary with file counts, timing, and status indicators
 
 ## Inspiration

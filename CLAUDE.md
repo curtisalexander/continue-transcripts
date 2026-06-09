@@ -139,6 +139,8 @@ Session JSON file
 | `extract_system_from_prompt_log` | Slices the leading `<system>` block out of a templated prompt log |
 | `markdown_to_html` / `ansi_to_html` | Markdown rendering + ANSI escape conversion |
 | `format_tokens` | Compact token formatting (1,234 / 12.3k / 1.2M) |
+| `render_index` | Builds `index.html` for a directory run — table of sessions plus a text filter and clickable project-tag chips (combined filtering) |
+| `project_name_from_workspace` | Derives a session's short project name (final component of the decoded `workspaceDirectory`) for the index project tags |
 
 ## Version management
 
