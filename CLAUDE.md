@@ -151,6 +151,15 @@ When asked to "bump version", update **all four** of these locations:
 3. `python/continue_transcripts/__init__.py` — `__version__ = "X.Y.Z"`
 4. `README.md` — all `--find-links` URLs containing the release version (e.g. `expanded_assets/vX.Y.Z`)
 
+After the bump commit lands on `main`, **tag the release and push the tag** (CI builds the release wheels on tag push):
+
+```sh
+git tag vX.Y.Z        # lightweight tag on the bump commit (matches recent convention)
+git push origin vX.Y.Z
+```
+
+The tag should point at the version-bump commit. Don't forget this step — a bumped version with no tag means no published wheels.
+
 ## continue.dev session format
 
 Sessions are stored as JSON in `~/.continue/sessions/`. Key structure:
